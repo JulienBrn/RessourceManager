@@ -24,5 +24,5 @@ setup(
     keywords=['python'],
     install_requires=[],
     #['pandas', 'matplotlib', 'PyQt5', "sklearn", "scikit-learn", "scipy", "numpy", "tqdm", "beautifullogger", "statsmodels", "mat73", "psutil"],
-    python_requires=">=3.10"
+    python_requires=">=3.8"
 )
