@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Tuple, List, Union, Dict, Callable, Literal, TypeVar, Set, Any, NewType, Generic, NoReturn
-import io, pathlib, multiprocessing
+import io, pathlib, multiprocessing, inspect, functools
 
 PersistenceRestriction = Union[Literal["limitedspace"], Literal["execution"]]
 StorageLocation = TypeVar("StorageLocation")
@@ -65,28 +65,48 @@ class Ressource:
 
     id: RessourceIDType
 
-    def run() -> NoReturn:
+    def compute(self, s: Storage = None):
         raise NotImplementedError()
     def mk_id(self) -> NoReturn:
         raise NotImplementedError()
 
+class BasicRessource(Ressource):
+    def __init__(self, f, arg_dict):
+        self.f = f
+        self.arg_dict = arg_dict
+
+    def compute(self, s: Storage = None):
+        return self.f(**self.arg_dict)
+
+class Proxy:
+    def __init__(self, f):
+        self.f = f
+    def rec(self, *args, **kwargs):
+        """Proxy object
+        """
+        return self.f(*args, **kwargs)
+
+
 class RessourceDecorator:
-    def __init__(storages = None, loaders = None, run_restrictions=None, group=None, run_output = "return", vectorize = None):
+    def __init__(auto_save_on = None, loaders = None, run_restrictions=None, group=None, run_output = "return", vectorize = None, unload = None):
         pass
 
     def param(self, str, ignore=False, dtype=None, vectorize = None):
         pass
     
-    def return_value(self, run_output = "return", storages = None, loaders = None, group=None):
+    def return_value(self, run_output = "return", auto_save_on = None, loaders = None, group=None, unload = None):
         pass
     
     def run(self, run_restrictions=None):
         pass
 
     def __call__(self, f):
+        @functools.wraps(f)
         def new_f(*args, **kwargs):
-            return Ressource(f)
-        return new_f
+            s = inspect.signature(f).bind(*args, **kwargs)
+            s.apply_defaults()
+            return BasicRessource(f, s.arguments)
+        return Proxy(new_f)
     
 
 class RessourceManager:
@@ -95,5 +115,9 @@ class RessourceManager:
 
     ressources: Set[Ressource]
 
+    @functools.wraps(RessourceDecorator.__init__)
     def ressource(self,**kwargs):
         return RessourceDecorator(**kwargs)
+    
+    def compute(self, l: List[Ressource]) -> NoReturn:
+        pass

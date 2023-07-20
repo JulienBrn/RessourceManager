@@ -20,7 +20,20 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 sys.excepthook = handle_exception
 
 
+
+from RessourceManager.ressource_manager import RessourceManager
+rm = RessourceManager()
+import time
+
+@rm.ressource()
+def test(wait, msg, val1, val2):
+    print(msg)
+    time.sleep(wait)
+    return val1 + val2
+
 def run():
     setup_nice_logging()
     logger.info("Running start")
+    r = test.rec(1, "test", 2, val2 = 3)
+    print(r.compute())
     logger.info("Running end")
