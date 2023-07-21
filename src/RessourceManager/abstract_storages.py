@@ -19,12 +19,12 @@ import io, pathlib, multiprocessing, inspect, functools
 
 
 
-StorageLocation = TypeVar("StorageLocation")
+
 AlphaNumString = NewType("AlphaNumString", str)
 IO = NewType("IO", Any)
 
 
-class AbstractStorage(Generic[StorageLocation], Protocol):
+class AbstractStorage(Protocol):
     """
     Abstract base class representing a storage.
     A storage may be a directory on disk, a directory on a server, a database, an hdf5 file, but also a dictionary in memory, a dictionary in memory in a different process, ...
@@ -42,6 +42,7 @@ class AbstractStorage(Generic[StorageLocation], Protocol):
     """
 
     name: str
+    StorageLocation: type
 
     def __init__(self, name):
         self.name = name
