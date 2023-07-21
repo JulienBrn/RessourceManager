@@ -39,7 +39,12 @@ class AbstractStorage(Generic[StorageLocation]):
     ----------
         name: str
             Should be unique for every storage
+
+    TODO
+    ----------
+        - define move function within and between storages. May require double_dispatch. Unclear whether this should be a free function, a static method or a method.
     """
+    
     name: str
 
     def __init__(self, name):
