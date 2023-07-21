@@ -10,7 +10,7 @@ T = TypeVar("T")
 Predicate = Union[Set[T], Callable[[T], bool]]
 
 RessourceIDType = NewType("RessourceId", str)
-RessourceIDRepresentationType = NewType("RessourceId", str)
+AlphaNumString = NewType("AlphaNumString", str)
 
 class Storage(Generic[StorageLocation]):
     name: str
@@ -18,7 +18,7 @@ class Storage(Generic[StorageLocation]):
     storage_lifetime: float
     is_human_readable: bool
 
-    supported_channels: List[ChannelTypeParam]
+    supported_stream_types: List[ChannelTypeParam]
 
     def mk_ressource_location(self, uniqueid: RessourceIDRepresentationType, name_info: Any = None) -> StorageLocation:
         raise NotImplementedError()

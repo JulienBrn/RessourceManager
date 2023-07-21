@@ -4,6 +4,7 @@ import io, pathlib, multiprocessing, inspect, functools
 
 from RessourceManager.ressource_manager import Ressource, Storage, Loader, ChannelTypeParam, StorageSolution, Hasher
 from RessourceManager.dict_storage_solution import DictStorage, DictLoader
+
 class BasicRessource(Ressource):
     def __init__(self, f, arg_dict, storage_solutions):
         self.f = f
