@@ -3,7 +3,7 @@ from typing import Tuple, List, Union, Dict, Callable, Literal, TypeVar, Set, An
 import io, pathlib, multiprocessing, inspect, functools
 import pandas as pd, numpy as np, pickle
 from tblib import pickling_support
-import logging
+import logging, hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,70 @@ class DelayedException(Exception):
     def __init__(self, s):
         super().__init__(s)
 
+class Storage:
+    pass
 
+class MemoryStorage(Storage):
+    name = "memory"
+    def __init__(self):
+        self.storage = {}
+
+    def make_location(self, id):
+        return id
+    
+    def dump(self, val, loc):
+        self.storage[loc] = val
+
+    def load(self, loc):
+        return self.storage[loc]
+
+    def has(self, loc):
+        return loc in self.storage
+    
+class PickledMemoryStorage(Storage):
+    
+    name = "pickledmemory"
+    def __init__(self):
+        self.storage = {}
+        pickling_support.install()
+        
+    def make_location(self, id):
+        return id
+    
+    def dump(self, val, loc):
+        pickling_support.install()
+        self.storage[loc] = pickle.dumps(val)
+
+    def load(self, loc):
+        pickling_support.install()
+        return pickle.loads(self.storage[loc])
+    
+    def has(self, loc):
+        return loc in self.storage
+    
+class PickledDiskStorage(Storage):
+    def __init__(self, directory):
+        pickling_support.install()
+        self.name = f"DictStorage({directory})"
+        self.cache_dir = pathlib.Path(directory)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+    def make_location(self, id):
+        return self.cache_dir / (hashlib.sha256(id.encode()).hexdigest() + ".pkl")
+    
+    def dump(self, val, loc):
+        pickle.dump(val, open(loc, "wb"))
+
+    def load(self, loc):
+        return pickle.load(open(loc, "rb"))
+
+    def has(self, loc):
+        return loc.exists()
+    
+pickled_disk_storage = PickledDiskStorage(".pickled_cache")
+pickled_memory_storage = PickledMemoryStorage()
+raw_memory_storage = MemoryStorage()
+pickling_support.install()
 d = {}
 
 def mhash(v: Any):
@@ -26,7 +89,7 @@ def mhash(v: Any):
     elif isinstance(v, int) or isinstance(v, float) or isinstance(v, np.int64):
         return str(v)
     else:
-        print(f"warning hash for {v} of type {type(v)}")
+        logger.warning(f"warning hash for {v} of type {type(v)}")
         return str(v)
 
 def ressource_from_id(id):
@@ -36,41 +99,124 @@ def ressource_from_id(id):
         return r
     else:
         raise KeyError(f"No ressource with id {id} declared")
+    
+def get_ressource_param(r: Ressource, d: pd.Series):
+    param_type = d["parameter"]
+    if param_type == "value":
+        return r.get()
+    if param_type == "ressource":
+        r.get() #without the exception raising
+        return r
+    elif isinstance(param_type, Storage):
+        storages=[param_type]
+    elif hasattr(param_type, "__getitem__") and hasattr(param_type, "__len__") and len(param_type) >0:
+        storages = param_type
+    else:
+        raise RuntimeError(f"Unknown parameter {param_type}")
+    
+    #Attempting to find a storage where it is already stored
+    found=False
+    for storage in storages:
+        loc = storage.make_location(r.id)
+        if storage.has(loc):
+            res = (storage, loc)
+            found=True
+            break
+    #Trying to compute the ressource on the given storage
+    if not found:
+        for storage in storages:
+            loc = storage.make_location(r.id)
+            try:
+                r.write(storage)
+                found=True
+            except:pass
+            if storage.has(loc):
+                res = (storage, loc)
+                found=True
+                break
+    if not found:
+        raise RuntimeError("Impossible to get ressource on desired storage")
+    return res
+    
 
+
+
+        
 class Ressource:
-    def __init__(self, name, f, arg_dict, params_df):
+    def __init__(self, name, f, arg_dict, params_df, 
+                 write_checkpoints=[raw_memory_storage, pickled_memory_storage, pickled_disk_storage], read_checkpoints=[raw_memory_storage, pickled_memory_storage, pickled_disk_storage]):
         
         self.id = str(name) + mhash({k:v for k,v in arg_dict.items() if not params_df.loc[k, "ignore"]})[len("dict"):]
         # self.id = str(name) + str(sorted({k:v for k,v in arg_dict.items()}))
         if not self.id in d:
-            d[self.id] = [name, f, arg_dict, params_df, None]
+            d[self.id] = [name, f, arg_dict, params_df, [(storage, storage.make_location(self.id)) for storage in write_checkpoints], [(storage, storage.make_location(self.id)) for storage in read_checkpoints]]
 
     def get(self):
-        [name, f, arg_dict, params_df, val] = d[self.id]
-        ressource_args = {k:v for k, v in arg_dict.items() if isinstance(v, Ressource)}
-        non_ressource_args = {k:v for k, v in arg_dict.items() if not isinstance(v, Ressource)}
-        if val is None:
+        [name, f, arg_dict, params_df, write_checkpoints, read_checkpoints] = d[self.id]
+        found = False
+        for storage, loc in read_checkpoints:
+            if storage.has(loc):
+                try:
+                    res = storage.load(loc)
+                    found=True
+                    break
+                except BaseException as e:
+                    logger.exception("Impossible to read ressource to storage. Skipping storage", e)
+        
+        if not found:
             try:
-                res = f(**non_ressource_args, **{k:v.get() for k,v in ressource_args.items()})
+                ressource_args = {k:get_ressource_param(v, params_df.loc[k, :]) for k, v in arg_dict.items() if isinstance(v, Ressource)}
+                non_ressource_args = {k:v for k, v in arg_dict.items() if not isinstance(v, Ressource)}
             except BaseException as e:
                 try:
-                    #Not very readable technique to append this exception in the exception stack.
-                    #I'm very open to something better, but it is important we do not change the type of the exception
-                    raise DelayedException(f"Error in {f.__name__}({arg_dict})") 
+                        #Not very readable technique to append this exception in the exception stack.
+                        #I'm very open to something better, but it is important we do not change the type of the exception
+                    raise DelayedException(f"Error to compute parameters for ressource {self.id}") from e
                 except DelayedException as de:
+                    res=de
+                # try:
+                #     print("EXCEPTION", e, "Cause", e.__cause__)
+                #     raise e from type(e.__cause__)(str(e.__cause__))
+                # except Exception as tmp:
+                #     res = tmp 
+                # res = None
+                # res =e
+                # res = "excpt"
+                pass
+            else:
+                try:
+                    res = f(**non_ressource_args, **ressource_args)
+                except BaseException as e:
                     try:
-                        raise e from de
-                    except BaseException as final:
-                        res = final
+                        #Not very readable technique to append this exception in the exception stack.
+                        #I'm very open to something better, but it is important we do not change the type of the exception
+                        raise DelayedException(f"Error in {f.__name__}({dict(**non_ressource_args, **ressource_args)}) for ressource {self.id}") from e
+                    except DelayedException as de:
+                        res=de
+                        # try:
+                        #     raise e from de
+                        # except BaseException as final:
+                        #     res = final
+            
+            
 
-            pickling_support.install()
-            res = pickle.dumps(res)
-            d[self.id][-1] = res
+            
 
-        res = pickle.loads(d[self.id][-1])
+        for storage, loc in write_checkpoints:
+            if not storage.has(loc):
+                try:
+                    storage.dump(res, loc)
+                except BaseException as e:
+                    logger.exception("Impossible to dump ressource to storage. Skipping storage", e)
+
         if isinstance(res, BaseException):
             raise res
         return res
+    
+    def write(self, storage):
+        loc = storage.make_location(self.id)
+        if not storage.has(loc):
+            storage.dump(self.get())
 
 
 # 
@@ -150,8 +296,8 @@ class RessourceDeclarator:
 
 
 class RessourceDecorator:
-    default_params = dict(ignore=False, dtype=object, parameter="value", lift = False)
-    #parameter = value | disk_storage_location 
+    default_params = dict(ignore=False, dtype=object, parameter="value", lift = None)
+    #parameter = value | disk_storage_location | ressource
     def __init__(self, name, auto_save_on = None, loaders = None, run_restrictions=None, group=None, run_output = "return", vectorize = False, unload = None):
         self.params = {".all": RessourceDecorator.default_params}
         self.name = name
@@ -183,7 +329,7 @@ class RessourceDecorator:
     def __call__(self, f):
         #Filling self.params_df
         arg_names = set(inspect.signature(f).parameters.keys())
-        print(arg_names)
+        # print(arg_names)
         
         params = {}
         # print(self.params)
