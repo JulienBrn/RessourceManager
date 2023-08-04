@@ -12,7 +12,7 @@ class FileStorage(AbstractStorage):
     def get_ressource_location(self, uniqueid: AlphaNumString, name_info: Dict[str, str]) -> str: 
         extension = name_info["extension"] if "extension" in name_info else ".unknown"
         group = name_info["group"] if "group" in name_info else ""
-        return group/ uniqueid + extension if group else uniqueid + extension
+        return str(pathlib.Path(group)/ uniqueid + extension if group else uniqueid + extension)
 
     def has_ressource(self, location: str) -> bool:
         return (self.dir / location).exists()
@@ -69,7 +69,7 @@ class DictMemoryStorage(AbstractStorage):
     def get_ressource_location(self, uniqueid: AlphaNumString, name_info: Dict[str, str]) -> str: 
         extension = name_info["extension"] if "extension" in name_info else ".unknown"
         group = name_info["group"] if "group" in name_info else ""
-        return group/ uniqueid + extension if group else uniqueid + extension
+        return str(pathlib.Path(group)/ uniqueid + extension if group else uniqueid + extension)
 
     def has_ressource(self, location: str) -> bool:
         return location in self.d
