@@ -139,8 +139,6 @@ def get_ressource_param(r: Ressource, d: pd.Series):
     return res
     
 
-
-
         
 class Ressource:
     def __init__(self, name, f, arg_dict, params_df, 
@@ -266,11 +264,19 @@ class RessourceDeclarator:
             unvectorized = {k:v for k,v in arg_dict.items() if k not in self.vectorize}
             d = pd.DataFrame(columns=list(self.vectorize))
             for k in self.vectorize:
+                if not d.empty and len(arg_dict[k]) != len(d.index):
+                    logger.warning(f"Vectorization warning: previous length was {len(d.index)} but param being assigned of length {len(arg_dict[k])}")
                 d[k] = arg_dict[k]
             res = d.apply(lambda row: Ressource(self.name, self.f, dict(**dict(row), **unvectorized), self.params_df), axis=1)
         return res
 
+    def copy(self):
+        res = RessourceDeclarator(self.f, self.name, self.params_df.copy())
+        res.vectorize = self.vectorize.copy()
+        return res
+
     def vectorized(self, *args, excluded={}):
+        other = self.copy()
         if len(args) > 0:
             param_list = set(args)
             if not len(excluded) == 0:
@@ -278,8 +284,8 @@ class RessourceDeclarator:
         else:
             param_list = set(self.params_df.index)
             param_list = param_list - set(excluded)
-        self.vectorize = param_list
-        return self
+        other.vectorize += param_list
+        return other
 
 
 

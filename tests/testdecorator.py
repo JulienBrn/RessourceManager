@@ -47,7 +47,7 @@ def divide3(a, b, debug=True):
 
 @RessourceDecorator("divide4").param("debug", ignore=True).param("b", parameter=raw_memory_storage)
 def divide4(a, b, debug=True):
-    print(f"b location {b}")
+    # print(f"b location {b}")
     b = b[0].load(b[1])
     print(f"divide2 called with a={a}, b={b}, debug={debug}")
     return a//b
@@ -73,6 +73,7 @@ rec_df["rec11"] = divide3.vectorized("a", "b").declare(b=rec_df["rec10"], a = da
 rec_df["rec13"] = divide.vectorized("a", "b").declare(b=rec_df["rec1"], a = data["a"])
 
 rec_df["rec12"] = divide4.vectorized("a", "b").declare(b=rec_df["rec10"], a = data["a"], debug=False)
+rec_df["rec12"] = divide4.vectorized("a", "b").declare(b=rec_df["rec1"], a = data["a"], debug=False)
 
 id_df = pd.DataFrame()
 for col in rec_df.columns:
@@ -106,8 +107,10 @@ try:
     if not exceptions==[]:
         raise ExceptionGroup(f"Errors while computing result_df", exceptions)
 
-except * DenominatorError as eg:
-    raise
+# except * DenominatorError as eg:
+#     pass
+except:
+    pass
 finally:
     # print("\n".join(d.keys()))
     # print(id_df)
