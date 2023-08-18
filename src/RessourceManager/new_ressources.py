@@ -32,7 +32,7 @@ class InputOptions:
     lifting: Lifting
 
 class ResultOptions:
-    result_on: Literal("Return") | Storage
+    result_on: Literal("Return") | (Storage, str) #str is the parameter that should be used to indicate where the result should be stored
     make_id: Callable[[str, Dict[str, str], bool], str]
 
 class ComputeOptions:
@@ -62,8 +62,8 @@ class RessourceData:
     log: Any
 
         ## Kept for efficiency
-    depends_on: Set[RessourceData]
-    is_used_by: Set[RessourceData]
+    # depends_on: Set[RessourceData]
+    # is_used_by: Set[RessourceData]
 
     # Possibly shared
 
@@ -148,9 +148,8 @@ class RessourceData:
         else:
             return self.identifier
 
-
-    def _get(self):
-        #First, check if ressource has already been computed
+    def _load(self):
+        excpts = {}
         for storage in self.readers:
             if storage.has(self):
                 try:
@@ -158,46 +157,57 @@ class RessourceData:
                     self.log.append(dict(action="loading_ressource", storage=storage, time=None, computation_time=None, n_errors=0, n_warnings=0))
                     return res
                 except Exception as e:
-                    logger.exception("Impossible to read ressource to storage. Skipping storage", e)
-        
-        #Otherwise, compute the ressource
-            #First, get the ressource parameters
+                    try:
+                        raise LoadingRessourceError(f"Impossible to read ressource from storage {storage} where it is stored") from e
+                    except LoadingRessourceError as exc:
+                        excpts[storage.name] = exc
+        if excpts == []:
+            raise LoadingRessourceError(f"Impossible to read ressource {self.identifier}: ressource is not stored on any read storages")
+        else:
+            # try:
+            raise ExceptionGroup(f"Impossible to read ressource {self.identifier}. Ressource was stored on {excpts.keys()}, but all storages had loading errors", excpts.values())
+            # except ExceptionGroup as e:
+            #     raise LoadingRessourceError(f"Impossible to read ressource {self.identifier}: Ressource was stored on {excpts.keys()}, but all storages had loading errors") from e
+    
+    
+    def _get_params(self):
         param_values = {k:self.compute_param_value(k) for k in self.param_dict.keys()}
-            #Check if Exceptions should be propagated
         propagated_exceptions =[]
         for k in param_values.keys():
             if self.param_dict[k][1].exception=="Propagate" and isinstance(param_values[k], BaseException):
                 try:
                     raise param_values[k]
-                except (Exception, ExceptionGroup)  as e:
+                except Exception  as e:
                     try:
                         raise InputRessourceError(f"Error in input {k} while computing ressource {self.identifier}") from e
                     except InputRessourceError as exc:
                         propagated_exceptions.append(exc)
         if len(propagated_exceptions) == 1:
-            return propagated_exceptions[0]
+            raise propagated_exceptions[0]
         elif len(propagated_exceptions) > 1:
-            return ExceptionGroup("Errors during computation of parameters for ressource {self.identifier}", propagated_exceptions)
-        
-            #Start the computation
+            raise ExceptionGroup("Errors during computation of parameters for ressource {self.identifier}", propagated_exceptions)
+        else:
+            if self.result_options.result_on != "Return":
+                param_values[self.result_options.result_on[1]] = self.get_location(self.result_options.result_on[0])
+            return param_values
+    
+    def _compute(self, param_values):
         self.log.append(dict(action="computation_start"))
         try:
             res = self.f(**param_values)
-        except (Exception, ExceptionGroup)  as e:
+        except Exception  as e:
             try:
                 raise ComputationRessourceError(f"Error in while computing ressource {self.identifier}") from e
             except ComputationRessourceError as excpt:
                 res = excpt
         self.log.append(dict(action="computation_end"))
+
         if self.result_options.result_on != "Return":
-            if not self.result_options.result_on.has(self):
+            if not self.result_options.result_on[0].has(self):
                 res = MissingRessourceError(f"Computation of ressource {self.identifier} should have stored result on storage {self.result_options.result_on}, but no ressource found")
-            else:
-                try:
-                    res = self.result_options.result_on.load(self)
-                except (Exception, ExceptionGroup)  as e:
-                    res = LoadingRessourceError(f"Computation of ressource {self.identifier} should have stored result on storage {self.result_options.result_on}. Ressource found but load failed.")
-        #Write the result to the relevant storages
+        return res
+    
+    def _store(self, res):
         for storage in self.writers:
             if not storage.has(self):
                 try:
@@ -205,33 +215,78 @@ class RessourceData:
                     self.log.append(dict(action="writing ressource", storage=storage, result=res))
                     return res
                 except Exception as e:
-                    logger.exception("Impossible to write ressource to storage. Skipping storage", e)
+                    logger.exception("Impossible to write ressource to storage. Skipping storage {}", e)
+                
+            
+    def _get(self):
+        try:
+            res = self._load()
+        except * LoadingRessourceError:
+            try:
+                params = self._get_params()
+            except * InputRessourceError as e:
+                res = e
+            else:
+                try:
+                    res = self._compute(params)
+                except * ComputationRessourceError as e:
+                    res = e
+                else:
+                    if self.result_options.result_on != "Return":
+                        try:
+                            res = self._load()
+                        except * LoadingRessourceError as e:
+                            res = e
+            try:
+                self._store(res)
+            except Exception as e:
+                logger.exception(f"Problem while attempting to store ressource {self.identifier} to storage", e)
         return res
 
-    def result(self):
+    def write_on_storage(self, s: Storage):
+        if not s.has(self):
+            try:
+                res = self._load()
+            except * LoadingRessourceError:
+                try:
+                    params = self._get_params()
+                except * InputRessourceError as e:
+                    res = e
+                else:
+                    try:
+                        res = self._compute(params)
+                    except * ComputationRessourceError as e:
+                        res = e
+                    else:
+                        if self.result_options.result_on != "Return":
+                            if s.has(self):
+                                return
+                            else:
+                                try:
+                                    res = self._load()
+                                except * LoadingRessourceError as e:
+                                    res = e
+                try:
+                    self._store(res)
+                except Exception as e:
+                    logger.exception(f"Problem while attempting to store ressource {self.identifier} to storage", e)
+            if not s.has(self):
+                s.dump(res)
+
+    def result(self, raise_on_exception=True):
         res = self._get()
-        if isinstance(res, Exception):
+        if isinstance(res, Exception) and raise_on_exception:
              raise res
         else:
              return res
         
-    def invalidate(self):
-        pass
+    # def invalidate(self):
+    #     pass
 
-    def remove_from_storage(self, s: Storage):
-        pass
+    # def remove_from_storage(self, s: Storage):
+    #     pass
 
-    def write_on_storage(self, s: Storage):
-        if s.has(self):
-            pass
-        elif self.is_stored(loadable=True):
-            pass #basically get
-        elif self.result_options.result_on == s:
-            self._run()
-        else:
-            res = self.get()
-            s.dump(self, res)
-        return self
+    
 
 
              
