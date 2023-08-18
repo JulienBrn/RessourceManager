@@ -90,7 +90,10 @@ class RessourceData:
                 values = ressources
             case _:
                 raise NotImplementedError(f"Unknown input option combination: action={option.action}, pass_as={option.pass_as}")
-        return option.lifting.reconstruct(values)
+        
+        res = option.lifting.reconstruct(values)
+        self.log.append(dict(action="Computed param value", param=param, val=res))
+        return res
     
     def compute_param_id(self, param: str, for_storage: bool) -> str:
         option = self.param_dict[param][1]
@@ -150,16 +153,17 @@ class RessourceData:
                         raise LoadingRessourceError(f"Impossible to read ressource from storage {storage} where it is stored") from e
                     except LoadingRessourceError as exc:
                         excpts[storage.name] = exc
-        if excpts == []:
+        if excpts == {}:
             raise LoadingRessourceError(f"Impossible to read ressource {self.identifier}: ressource is not stored on any read storages")
         else:
             # try:
-            raise ExceptionGroup(f"Impossible to read ressource {self.identifier}. Ressource was stored on {excpts.keys()}, but all storages had loading errors", excpts.values())
+            raise ExceptionGroup(f"Impossible to read ressource {self.identifier}. Ressource was stored on {excpts.keys()}, but all storages had loading errors", list(excpts.values()))
             # except ExceptionGroup as e:
             #     raise LoadingRessourceError(f"Impossible to read ressource {self.identifier}: Ressource was stored on {excpts.keys()}, but all storages had loading errors") from e
     
     
     def _get_params(self):
+        self.log.append(dict(action="computating_params_start"))
         param_values = {k:self.compute_param_value(k) for k in self.param_dict.keys()}
         propagated_exceptions =[]
         for k in param_values.keys():
@@ -178,6 +182,7 @@ class RessourceData:
         else:
             if self.result_options.result_on != "Return":
                 param_values[self.result_options.result_on[1]] = self.get_location(self.result_options.result_on[0])
+            self.log.append(dict(action="computating_params_end", value = param_values))
             return param_values
     
     def _compute(self, param_values):
@@ -279,7 +284,7 @@ class RessourceData:
     #     pass
 
 RessourceManager.lifting.RessourceData = RessourceData
-
+import copy
 class RessourceManager:
     def __init__(self):
         self.d={}
@@ -300,6 +305,7 @@ class RessourceDeclarator:
         self.params = params
         self.f = f
         self.manager = manager
+
 
     def declare(self, *args, **kwargs):
         s = inspect.signature(self.f).bind(*args, **kwargs)
@@ -328,6 +334,9 @@ class RessourceDecorator:
         self.writers=writers
         self.manager = manager
 
+    def copy(self):
+        return copy.copy(self)
+    
     def __call__(self, f): 
         arg_names = set(inspect.signature(f).parameters.keys())
         if self.name is None:
