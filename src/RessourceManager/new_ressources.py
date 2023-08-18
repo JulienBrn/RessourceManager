@@ -4,7 +4,7 @@ import pandas as pd, tqdm, numpy as np
 import logging, hashlib, functools
 from RessourceManager.lifting import Lifting
 from RessourceManager.id_makers import unique_id, make_result_id
-from RessourceManager.storage import Storage
+from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage
 import inspect
 
 logger = logging.getLogger(__name__)
@@ -271,52 +271,19 @@ class RessourceData:
 
     # def remove_from_storage(self, s: Storage):
     #     pass
-
-    
-
-
-             
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        # def get_id_from_ressource(r: RessourceData):
-        #     if r.result_options.is_value_dependency:
-        #         try:
-        #             id = r.result()
-        #         except:
-        #             raise #TODO
-        #     else:
-        #         return r.id
         
-        
+class RessourceManager:
+    def __init__(self):
+        self.d={}
+    def declare(self, r):
+        if not r.identifier in self.d:
+            self.d[r.identifier] = r
+        return self.d[r.identifier]
 
-        # self.id = str(self.group_name) + mhash({k:v for k,v in arg_dict.items() if not params_df.loc[k, "ignore"]})[len("dict"):]
-
-        
-
+default_manager = RessourceManager()
 
 class RessourceDeclarator:
-    def __init__(self, name, result_options, compute_options, readers, writers, params, f):
+    def __init__(self, name, result_options, compute_options, readers, writers, params, f, manager):
         self.name = name
         self.result_options=result_options
         self.compute_options = compute_options
@@ -324,6 +291,7 @@ class RessourceDeclarator:
         self.writers = writers
         self.params = params
         self.f = f
+        self.manager = manager
 
     def declare(self, *args, **kwargs):
         s = inspect.signature(self.f).bind(*args, **kwargs)
@@ -339,17 +307,18 @@ class RessourceDeclarator:
         r.readers = self.readers
         r.writers = self.writers
         r.log = []
-        return r
+        return self.manager.declare(r)
 
 
 class RessourceDecorator:
-    def __init__(self, name = None, *, result_on = "Return", make_result_id = make_result_id, compute_options = ComputeOptions(), readers=[MemoryStorage(), PickledDiskStorage(".cache")], writers = [MemoryStorage(), PickledDiskStorage(".cache")]):
+    def __init__(self, name = None, *, manager = default_manager, result_on = "Return", make_result_id = make_result_id, compute_options = ComputeOptions(), readers=[memory_storage, pickled_disk_storage], writers = [memory_storage, pickled_disk_storage]):
         self.name = name
         self.result_options= ResultOptions(result_on = result_on, make_result_id = make_result_id)
         self.compute_options = compute_options
         self.inputopt={".all": InputOptions()}
         self.readers=readers
         self.writers=writers
+        self.manager = manager
 
     def __call__(self, f): 
         arg_names = set(inspect.signature(f).parameters.keys())
@@ -365,7 +334,7 @@ class RessourceDecorator:
                 params[k] = self.inputopt[k]
         
 
-        return RessourceDeclarator(self.name, self.result_options, self.compute_options, self.readers, self.writers, params, f)
+        return RessourceDeclarator(self.name, self.result_options, self.compute_options, self.readers, self.writers, params, f, self.manager)
 
 
 
@@ -402,6 +371,11 @@ class RessourceDecorator:
     def name(self, name: str):
         other = self.copy()
         other.name = name
+        return other
+    
+    def manager(self, manager: RessourceManager):
+        other = self.copy()
+        other.manager = manager
         return other
     
     def result_options(self, result_on = None, make_id = None):
