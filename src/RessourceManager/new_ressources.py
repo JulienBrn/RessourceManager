@@ -3,24 +3,11 @@ from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, Typ
 import pandas as pd, tqdm, numpy as np
 import logging, hashlib, functools
 from RessourceManager.lifting import Lifting
+from RessourceManager.id_makers import unique_id, make_result_id
 from RessourceManager.storage import Storage
+import inspect
 
 logger = logging.getLogger(__name__)
-
-def unique_id(v: Any):
-   if isinstance(v, list):
-         return f'[{",".join([unique_id(x) for x in v])}]'
-   elif isinstance(v, dict):
-         return f'dict({",".join([f"{unique_id(k)}={unique_id(val)}" for k,val in sorted(v.items())])})'
-   elif isinstance(v, str):
-         return v
-   elif isinstance(v, int) or isinstance(v, float) or isinstance(v, np.int64):
-         return f"{str(v)}: {type(v)}"
-   else:
-         raise Exception(f"Impossible to hash {v} of type {type(v)}")
-
-
-
 
 
 class InputOptions:
@@ -74,7 +61,6 @@ class RessourceData:
         ## Function Definition
     group_name: str
     f: Callable[..., Any]
-    param_options: Dict[str, InputOptions]
     result_options: ResultOptions
     compute_options: ComputeOptions
     
@@ -313,29 +299,143 @@ class RessourceData:
 
 
 
-        def get_id_from_ressource(r: RessourceData):
-            if r.result_options.is_value_dependency:
-                try:
-                    id = r.result()
-                except:
-                    raise #TODO
-            else:
-                return r.id
+        # def get_id_from_ressource(r: RessourceData):
+        #     if r.result_options.is_value_dependency:
+        #         try:
+        #             id = r.result()
+        #         except:
+        #             raise #TODO
+        #     else:
+        #         return r.id
         
         
 
-        self.id = str(self.group_name) + mhash({k:v for k,v in arg_dict.items() if not params_df.loc[k, "ignore"]})[len("dict"):]
+        # self.id = str(self.group_name) + mhash({k:v for k,v in arg_dict.items() if not params_df.loc[k, "ignore"]})[len("dict"):]
 
         
 
 
+class RessourceDeclarator:
+    def __init__(self, name, result_options, compute_options, readers, writers, params, f):
+        self.name = name
+        self.result_options=result_options
+        self.compute_options = compute_options
+        self.readers = readers
+        self.writers = writers
+        self.params = params
+        self.f = f
 
-    
+    def declare(self, *args, **kwargs):
+        s = inspect.signature(self.f).bind(*args, **kwargs)
+        s.apply_defaults()
+        arg_dict = s.arguments
+
+        r = RessourceData()
+        r.group_name = self.name
+        r.compute_options = self.compute_options
+        r.result_options = self.result_options
+        r.param_dict = {k:(arg_dict[k], self.params[k]) for k in self.params}
+        r.f = self.f
+        r.readers = self.readers
+        r.writers = self.writers
+        r.log = []
+        return r
+
 
 class RessourceDecorator:
-    pass
+    def __init__(self, name = None, *, result_on = "Return", make_result_id = make_result_id, compute_options = ComputeOptions(), readers=[MemoryStorage(), PickledDiskStorage(".cache")], writers = [MemoryStorage(), PickledDiskStorage(".cache")]):
+        self.name = name
+        self.result_options= ResultOptions(result_on = result_on, make_result_id = make_result_id)
+        self.compute_options = compute_options
+        self.inputopt={".all": InputOptions()}
+        self.readers=readers
+        self.writers=writers
 
-class RessourceManager:
-    ressources: Dict[str, RessourceData]
+    def __call__(self, f): 
+        arg_names = set(inspect.signature(f).parameters.keys())
+
+        if not (set(self.inputopt.keys()) - set(arg_names.keys()) - set([".all"])).empty():
+            raise ValueError(f"Invalid parameters named for decorator: {(set(self.inputopt.keys()) - set(arg_names.keys()) - set(['.all']))}")
+        params = {}
+
+        for k in arg_names:
+            if k not in self.inputopt:
+                params[k] = self.inputopt[".all"]
+            else:
+                params[k] = self.inputopt[k]
+        
+
+        return RessourceDeclarator(self.name, self.result_options, self.compute_options, self.readers, self.writers, params, f)
+
+
+
+    def params(self, params = ".all", *, dependency = None,  make_id = None, pass_as=None, action= None, exception = None, lifting = None, vectorized=None):
+        def update_inputopt(o):
+            if not dependency is None:
+                o.dependency = dependency
+            if not make_id is None:
+                o.make_id = make_id
+            if not pass_as is None:
+                o.pass_as = pass_as
+            if not action is None:
+                o.action = action
+            if not exception is None:
+                o.exception = exception
+            if not lifting is None:
+                o.lifting = lifting
+            if not vectorized is None:
+                o.vectorized = vectorized
+
+        if params ==".all":
+            params = list(self.inputopt.keys())
+        if isinstance(params, str):
+            params = [params]
+
+        other = self.copy()
+        for param in params:
+            if not param in other.inputopt:
+                other.inputopt[param] = other.inputopt[".all"].copy()
+            update_inputopt(other.inputopt[param])
+
+        return other
     
-    def ressource(self) -> RessourceDecorator: pass
+    def name(self, name: str):
+        other = self.copy()
+        other.name = name
+        return other
+    
+    def result_options(self, result_on = None, make_id = None):
+        other = self.copy()
+        if not result_on is None:
+            other.result_options.result_on = result_on
+        if not make_id is None:
+            other.result_options.make_result_id = make_id
+        return other
+    
+    def readers(self, *args):
+        other = self.copy()
+        other.readers = args
+        return other
+
+    def add_readers(self, *args, with_highest_priority = True):
+        other = self.copy()
+        if with_highest_priority:
+            other.readers = args + other.readers
+        else:
+            other.readers = other.readers + args
+        return other
+    
+    def writers(self, *args):
+        other = self.copy()
+        other.writers = args
+        return other
+
+    def add_writers(self, *args, with_highest_priority = True):
+        other = self.copy()
+        if with_highest_priority:
+            other.writers = args + other.writers
+        else:
+            other.readers = other.writers + args
+        return other
+
+
