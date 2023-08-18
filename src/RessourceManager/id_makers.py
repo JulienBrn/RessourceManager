@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict
 import pandas as pd, tqdm, numpy as np
 import logging, hashlib, functools
-from RessourceManager.new_ressources import RessourceData
 
 
 def unique_id(v: Any):
@@ -13,7 +12,7 @@ def unique_id(v: Any):
     elif isinstance(v, str):
             return v
     elif isinstance(v, int) or isinstance(v, float) or isinstance(v, np.int64):
-            return f"{str(v)}: {type(v)}"
+            return f"{str(v)}: {type(v).__name__}"
     else:
             raise Exception(f"Impossible to make_id {v} of type {type(v)}")
    

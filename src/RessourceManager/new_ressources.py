@@ -2,14 +2,16 @@ from __future__ import annotations
 from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict
 import pandas as pd, tqdm, numpy as np
 import logging, hashlib, functools
-from RessourceManager.lifting import Lifting
+from RessourceManager.lifting import Lifting, NoLifting
+import RessourceManager.lifting
 from RessourceManager.id_makers import unique_id, make_result_id
 from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage
 import inspect
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-
+@dataclass
 class InputOptions:
     dependency: Literal("RessourceId") | Literal("Value") | Literal("Ignore")
     make_id: Callable[[Any], str]
@@ -18,6 +20,7 @@ class InputOptions:
     exception: Literal("Propagate") | Literal("PassAsValue")
     lifting: Lifting
 
+@dataclass
 class ResultOptions:
     result_on: Literal("Return") | (Storage, str) #str is the parameter that should be used to indicate where the result should be stored
     make_id: Callable[[str, Dict[str, str], bool], str]
@@ -120,11 +123,11 @@ class RessourceData:
         self.log.append(dict(action="computing_id", result=id, time=None, computation_time=None, n_errors=0, n_warnings=0))
         return id
 
-    @functools.cached_property()
+    @functools.cached_property
     def identifier(self):
         return self.compute_id(for_storage=False)
     
-    @functools.cached_property()
+    @functools.cached_property
     def storage_id(self):
         return self.compute_id(for_storage=True)
     
@@ -230,6 +233,7 @@ class RessourceData:
         return res
 
     def write_on_storage(self, s: Storage):
+        is_loaded = True
         if not s.has(self):
             try:
                 res = self._load()
@@ -245,15 +249,17 @@ class RessourceData:
                         res = e
                     else:
                         if self.result_options.result_on != "Return":
-                            if s.has(self):
-                                return
-                            else:
-                                try:
-                                    res = self._load()
-                                except * LoadingRessourceError as e:
+                            try:
+                                res = self._load()
+                            except * LoadingRessourceError as e:
+                                if not s.has(self):
                                     res = e
+                                else:
+                                    is_loaded = False
+                            
                 try:
-                    self._store(res)
+                    if is_loaded:
+                        self._store(res)
                 except Exception as e:
                     logger.exception(f"Problem while attempting to store ressource {self.identifier} to storage", e)
             if not s.has(self):
@@ -271,7 +277,9 @@ class RessourceData:
 
     # def remove_from_storage(self, s: Storage):
     #     pass
-        
+
+RessourceManager.lifting.RessourceData = RessourceData
+
 class RessourceManager:
     def __init__(self):
         self.d={}
@@ -313,17 +321,18 @@ class RessourceDeclarator:
 class RessourceDecorator:
     def __init__(self, name = None, *, manager = default_manager, result_on = "Return", make_result_id = make_result_id, compute_options = ComputeOptions(), readers=[memory_storage, pickled_disk_storage], writers = [memory_storage, pickled_disk_storage]):
         self.name = name
-        self.result_options= ResultOptions(result_on = result_on, make_result_id = make_result_id)
+        self.result_options= ResultOptions(result_on = result_on, make_id = make_result_id)
         self.compute_options = compute_options
-        self.inputopt={".all": InputOptions()}
+        self.inputopt={".all": InputOptions(dependency="RessourceId", make_id = unique_id, pass_as = "Value", action="Used", lifting=NoLifting(), exception="Propagate")}
         self.readers=readers
         self.writers=writers
         self.manager = manager
 
     def __call__(self, f): 
         arg_names = set(inspect.signature(f).parameters.keys())
-
-        if not (set(self.inputopt.keys()) - set(arg_names.keys()) - set([".all"])).empty():
+        if self.name is None:
+            self.name = f.__name__
+        if (set(self.inputopt.keys()) - set(arg_names) - set([".all"])) == {}:
             raise ValueError(f"Invalid parameters named for decorator: {(set(self.inputopt.keys()) - set(arg_names.keys()) - set(['.all']))}")
         params = {}
 
