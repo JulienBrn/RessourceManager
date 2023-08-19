@@ -70,7 +70,7 @@ class RessourceData:
     def compute_param_value(self, param: str):
         option = self.param_dict[param][1]
         param_value = self.param_dict[param][0]
-        ressources = option.lifting.deconstruct(param_value)
+        ressources, reconstruct = option.lifting.deconstruct(param_value)
 
         match (option.action, option.pass_as):
             case "Used", "Value":
@@ -91,14 +91,14 @@ class RessourceData:
             case _:
                 raise NotImplementedError(f"Unknown input option combination: action={option.action}, pass_as={option.pass_as}")
         
-        res = option.lifting.reconstruct(values)
-        self.log.append(dict(action="Computed param value", param=param, val=res))
+        res = reconstruct(values)
+        self.log.append(dict(action="Computed param value", param=param, val=res, values=values))
         return res
     
     def compute_param_id(self, param: str, for_storage: bool) -> str:
         option = self.param_dict[param][1]
         param_value = self.param_dict[param][0]
-        ressources = option.lifting.deconstruct(param_value)
+        ressources, reconstruct = option.lifting.deconstruct(param_value)
 
         match option.dependency, for_storage:
             case "Ignore", _:
@@ -113,7 +113,7 @@ class RessourceData:
             case _:
                 raise NotImplementedError(f"Unknown input option: dependency={option.dependency}")
             
-        obj = option.lifting.reconstruct(ids)
+        obj = reconstruct(ids)
         return option.make_id(obj)
     
     def compute_id(self, for_storage: bool):

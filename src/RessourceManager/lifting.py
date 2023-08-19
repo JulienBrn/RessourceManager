@@ -12,16 +12,15 @@ class Lifting:
 
 class NoLifting(Lifting):
     def deconstruct(self, obj) -> List[RessourceData]:
-        self.obj = obj
         if isinstance(obj, RessourceData):
-            return [obj]
+            return [obj], lambda x: x[0]
         else:
-            return []
-    def reconstruct(self, objs: List[Any]) -> Any: 
-        if isinstance(self.obj, RessourceData):
-            return objs[0]
-        else:
-            return self.obj
+            return [], lambda x:obj
+        # def reconstruct(self, objs: List[Any]) -> Any: 
+        #     if isinstance(obj, RessourceData):
+        #         return objs[0]
+        #     else:
+        #         return self.obj
         
 class ListLifting(Lifting):
     def deconstruct(self, obj) -> List[RessourceData]:
