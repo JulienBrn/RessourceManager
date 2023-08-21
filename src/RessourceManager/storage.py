@@ -12,11 +12,11 @@ class MemoryStorage(Storage):
     def __init__(self):
         self.d = {}
     def has(self, r):
-        return r.identifier in self.d
+        return r.storage_id in self.d
     def load(self, r):
-        return self.d[r.identifier]
+        return self.d[r.storage_id]
     def dump(self, r, val):
-        self.d[r.identifier] = val
+        self.d[r.storage_id] = val
 
 memory_storage = MemoryStorage()
 pickled_disk_storage = MemoryStorage()

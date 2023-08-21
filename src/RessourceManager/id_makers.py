@@ -11,6 +11,8 @@ def unique_id(v: Any):
             return f'dict({",".join([f"{unique_id(k)}={unique_id(val)}" for k,val in sorted(v.items())])})'
     elif isinstance(v, str):
             return v
+    elif isinstance(v, bytes):
+            return f"{v}: bytes"
     elif isinstance(v, int) or isinstance(v, float) or isinstance(v, np.int64):
             return f"{str(v)}: {type(v).__name__}"
     else:
@@ -23,4 +25,4 @@ def hashed_id(v: Any):
 def make_result_id(name, param_dict, for_storage):
     arg_list = [f"{k}={val}" for k,val in sorted(param_dict.items())]
     id=f"{name}({', '.join(arg_list)})"
-    return id if not for_storage else hashlib.md5(id).digest()
+    return id if not for_storage else hashlib.md5(id.encode()).digest()

@@ -19,6 +19,7 @@ class InputOptions:
     action: Literal("Used") | Literal("Passed") | Literal("Other")
     exception: Literal("Propagate") | Literal("PassAsValue")
     lifting: Lifting
+    _vectorized: bool
 
 @dataclass
 class ResultOptions:
@@ -43,7 +44,9 @@ class ComputationRessourceError(RessourceException):pass
 class InputRessourceError(RessourceException):pass
 class MissingRessourceError(RessourceException):pass
 class LoadingRessourceError(RessourceException):pass
+class VectorizationError(Exception):pass
 
+@dataclass
 class RessourceData:
     # Individual
 
@@ -108,6 +111,7 @@ class RessourceData:
                 for r in ressources:
                     ids.append(r.get_id(for_storage))
             case ("Value", True):
+                ids = []
                 for r in ressources:
                     ids.append(r._get())
             case _:
@@ -123,7 +127,7 @@ class RessourceData:
         except Exception as e:
                 self.log.append(dict(action="computing_id", result=e, time=None, computation_time=None, n_errors=1, n_warnings=0))
                 raise RessourceIDError(f"Error while computing id for ressource of group {self.group_name}") from e
-        self.log.append(dict(action="computing_id", result=id, time=None, computation_time=None, n_errors=0, n_warnings=0))
+        self.log.append(dict(action="computing_id", for_storage=for_storage, result=id, time=None, computation_time=None, n_errors=0, n_warnings=0))
         return id
 
     @functools.cached_property
@@ -215,26 +219,31 @@ class RessourceData:
     def _get(self):
         try:
             res = self._load()
+            return res
         except * LoadingRessourceError:
+            pass
+        try:
+            params = self._get_params()
+        except * InputRessourceError as e:
+            res = e
+        else:
             try:
-                params = self._get_params()
-            except * InputRessourceError as e:
-                res = e
-            else:
+                res = self._compute(params)
+            except * ComputationRessourceError as e:
                 try:
-                    res = self._compute(params)
-                except * ComputationRessourceError as e:
+                    raise e from None
+                except Exception as e:
                     res = e
-                else:
-                    if self.result_options.result_on != "Return":
-                        try:
-                            res = self._load()
-                        except * LoadingRessourceError as e:
-                            res = e
-            try:
-                self._store(res)
-            except Exception as e:
-                logger.exception(f"Problem while attempting to store ressource {self.identifier} to storage", e)
+            else:
+                if self.result_options.result_on != "Return":
+                    try:
+                        res = self._load()
+                    except * LoadingRessourceError as e:
+                        res = e
+        try:
+            self._store(res)
+        except Exception as e:
+            logger.exception(f"Problem while attempting to store ressource {self.identifier} to storage", e)
         return res
 
     def write_on_storage(self, s: Storage):
@@ -302,34 +311,73 @@ class RessourceDeclarator:
         self.compute_options = compute_options
         self.readers = readers
         self.writers = writers
-        self.params = params
+        self.param_dict = params
         self.f = f
         self.manager = manager
 
-
+    def copy(self):
+        return copy.copy(self)
+    
     def declare(self, *args, **kwargs):
         s = inspect.signature(self.f).bind(*args, **kwargs)
         s.apply_defaults()
         arg_dict = s.arguments
-
-        r = RessourceData()
-        r.group_name = self.name
-        r.compute_options = self.compute_options
-        r.result_options = self.result_options
-        r.param_dict = {k:(arg_dict[k], self.params[k]) for k in self.params}
-        r.f = self.f
-        r.readers = self.readers
-        r.writers = self.writers
-        r.log = []
+        vectorized_args = [k for k,v in self.param_dict.items() if v._vectorized]
+        print(f"vectorized args = {vectorized_args}", self.param_dict)
+        lens = {k:len(arg_dict[k]) for k in vectorized_args}
+        if len(set(lens.values())) > 1:
+            raise VectorizationError(f"All vectorized arguments should have same length. Got {lens}")
+        if vectorized_args != []:
+            l=[]
+            for i in range(list(lens.values())[0]):
+                r = RessourceData(
+                    group_name = self.name, compute_options=self.compute_options, result_options=self.result_options, 
+                    param_dict={k:(arg_dict[k] if not k in vectorized_args else arg_dict[k][i], self.param_dict[k]) for k in self.param_dict}, f = self.f, readers=self.readers, writers=self.writers, log=[])
+                l.append(self.manager.declare(r))
+            return l
+        else:
+            r = RessourceData(
+                group_name = self.name, compute_options=self.compute_options, result_options=self.result_options, 
+                param_dict={k:(arg_dict[k], self.param_dict[k]) for k in self.param_dict}, f = self.f, readers=self.readers, writers=self.writers, log=[])
         return self.manager.declare(r)
+    
+    def params(self, params = ".all", *, dependency = None,  make_id = None, pass_as=None, action= None, exception = None, lifting = None, vectorized=None):
+        print(self.param_dict, params)
+        def update_inputopt(o):
+            if not dependency is None:
+                o.dependency = dependency
+            if not make_id is None:
+                o.make_id = make_id
+            if not pass_as is None:
+                o.pass_as = pass_as
+            if not action is None:
+                o.action = action
+            if not exception is None:
+                o.exception = exception
+            if not lifting is None:
+                o.lifting = lifting
+            if not vectorized is None:
+                o._vectorized = vectorized
 
+        if params ==".all":
+            params = list(self.param_dict.keys())
+        if isinstance(params, str):
+            params = [params]
+
+        if (set(params) - set(self.param_dict.keys())) == {}:
+            raise ValueError(f"Invalid parameters named for decorator: {(set(params) - set(self.param_dict.keys()))}")
+        other = self.copy()
+        for param in params:
+            update_inputopt(other.param_dict[param])
+        print(other.param_dict, params)
+        return other
 
 class RessourceDecorator:
     def __init__(self, name = None, *, manager = default_manager, result_on = "Return", make_result_id = make_result_id, compute_options = ComputeOptions(), readers=[memory_storage, pickled_disk_storage], writers = [memory_storage, pickled_disk_storage]):
         self.name = name
         self.result_options= ResultOptions(result_on = result_on, make_id = make_result_id)
         self.compute_options = compute_options
-        self.inputopt={".all": InputOptions(dependency="RessourceId", make_id = unique_id, pass_as = "Value", action="Used", lifting=NoLifting(), exception="Propagate")}
+        self.inputopt={".all": InputOptions(dependency="RessourceId", make_id = unique_id, pass_as = "Value", action="Used", lifting=NoLifting(), exception="Propagate", _vectorized=False)}
         self.readers=readers
         self.writers=writers
         self.manager = manager
@@ -347,7 +395,7 @@ class RessourceDecorator:
 
         for k in arg_names:
             if k not in self.inputopt:
-                params[k] = self.inputopt[".all"]
+                params[k] = copy.copy(self.inputopt[".all"])
             else:
                 params[k] = self.inputopt[k]
         
@@ -381,7 +429,7 @@ class RessourceDecorator:
         other = self.copy()
         for param in params:
             if not param in other.inputopt:
-                other.inputopt[param] = other.inputopt[".all"].copy()
+                other.inputopt[param] = other.inputopt[".all"].deepcopy()
             update_inputopt(other.inputopt[param])
 
         return other
