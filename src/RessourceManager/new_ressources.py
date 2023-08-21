@@ -26,6 +26,7 @@ class ResultOptions:
     result_on: Literal("Return") | (Storage, str) #str is the parameter that should be used to indicate where the result should be stored
     make_id: Callable[[str, Dict[str, str], bool], str]
 
+@dataclass
 class ComputeOptions:
     progress: Optional(tqdm.tqdm)
     n_retries: int
@@ -70,7 +71,7 @@ class RessourceData:
     result_options: ResultOptions
     compute_options: ComputeOptions
     
-    def compute_param_value(self, param: str):
+    def compute_param_value(self, param: str, progress):
         option = self.param_dict[param][1]
         param_value = self.param_dict[param][0]
         ressources, reconstruct = option.lifting.deconstruct(param_value)
@@ -79,7 +80,7 @@ class RessourceData:
             case "Used", "Value":
                 values = []
                 for r in ressources:
-                    values.append(r._get())
+                    values.append(r._get(progress))
             case "Used", "Ressource":
                 raise NotImplementedError(f"Lock technique is not yet implemented and therefore the input option combination: action={option.action}, pass_as={option.pass_as} is not possible")
                 # for r in ressources:
@@ -113,7 +114,7 @@ class RessourceData:
             case ("Value", True):
                 ids = []
                 for r in ressources:
-                    ids.append(r._get())
+                    ids.append(r._get(progress=None))
             case _:
                 raise NotImplementedError(f"Unknown input option: dependency={option.dependency}")
             
@@ -166,9 +167,9 @@ class RessourceData:
             #     raise LoadingRessourceError(f"Impossible to read ressource {self.identifier}: Ressource was stored on {excpts.keys()}, but all storages had loading errors") from e
     
     
-    def _get_params(self):
+    def _get_params(self, progress):
         self.log.append(dict(action="computating_params_start"))
-        param_values = {k:self.compute_param_value(k) for k in self.param_dict.keys()}
+        param_values = {k:self.compute_param_value(k, progress) for k in self.param_dict.keys()}
         propagated_exceptions =[]
         for k in param_values.keys():
             if self.param_dict[k][1].exception=="Propagate" and isinstance(param_values[k], BaseException):
@@ -176,7 +177,7 @@ class RessourceData:
                     raise param_values[k]
                 except Exception  as e:
                     try:
-                        raise InputRessourceError(f"Error in input {k} while computing ressource {self.identifier}") from e
+                        raise InputRessourceError(f"Error in input '{k}' while computing ressource {self.identifier}") from e
                     except InputRessourceError as exc:
                         propagated_exceptions.append(exc)
         if len(propagated_exceptions) == 1:
@@ -189,10 +190,16 @@ class RessourceData:
             self.log.append(dict(action="computating_params_end", value = param_values))
             return param_values
     
-    def _compute(self, param_values):
+    def _compute(self, param_values, progress):
         self.log.append(dict(action="computation_start"))
         try:
-            res = self.f(**param_values)
+            if self.compute_options.progress is None:
+                res = self.f(**param_values)
+            else:
+                if inspect.isclass(progress):
+                    progress = progress()
+                progress.set_description(f"Computing {self.identifier[0:50]}{'...)' if len(self.identifier)> 49 else ''}")
+                res = self.f(**param_values, **{self.compute_options.progress: progress})
         except Exception  as e:
             try:
                 raise ComputationRessourceError(f"Error in while computing ressource {self.identifier}") from e
@@ -216,22 +223,22 @@ class RessourceData:
                     logger.exception("Impossible to write ressource to storage. Skipping storage {}", e)
                 
             
-    def _get(self):
+    def _get(self, progress):
         try:
             res = self._load()
             return res
         except * LoadingRessourceError:
             pass
         try:
-            params = self._get_params()
+            params = self._get_params(progress=progress)
         except * InputRessourceError as e:
             res = e
         else:
             try:
-                res = self._compute(params)
+                res = self._compute(params, progress=progress)
             except * ComputationRessourceError as e:
                 try:
-                    raise e from None
+                    raise e 
                 except Exception as e:
                     res = e
             else:
@@ -279,10 +286,18 @@ class RessourceData:
             if not s.has(self):
                 s.dump(res)
 
-    def result(self, raise_on_exception=True):
-        res = self._get()
-        if isinstance(res, Exception) and raise_on_exception:
-             raise res
+    def result(self, exception: (Literal("raise") | Literal("return") | List[Exception]) ="raise", progress=tqdm.tqdm ):
+        res = self._get(progress=progress)
+        if isinstance(res, Exception):
+            if exception=="raise":
+                raise res
+            elif exception=="return":
+                return res
+            elif isinstance(exception, list):
+                exception.append(res)
+                return "Error"
+            else:
+                raise ValueError(f"Unknown option {exception}")
         else:
              return res
         
@@ -316,14 +331,17 @@ class RessourceDeclarator:
         self.manager = manager
 
     def copy(self):
-        return copy.copy(self)
+        return copy.deepcopy(self)
     
     def declare(self, *args, **kwargs):
-        s = inspect.signature(self.f).bind(*args, **kwargs)
+        if self.compute_options.progress is None:
+            s = inspect.signature(self.f).bind(*args, **kwargs)
+        else:
+            s = inspect.signature(self.f).bind(*args, **kwargs, **{self.compute_options.progress:None})
         s.apply_defaults()
         arg_dict = s.arguments
         vectorized_args = [k for k,v in self.param_dict.items() if v._vectorized]
-        print(f"vectorized args = {vectorized_args}", self.param_dict)
+        # print(f"vectorized args = {vectorized_args}", self.param_dict)
         lens = {k:len(arg_dict[k]) for k in vectorized_args}
         if len(set(lens.values())) > 1:
             raise VectorizationError(f"All vectorized arguments should have same length. Got {lens}")
@@ -342,7 +360,7 @@ class RessourceDeclarator:
         return self.manager.declare(r)
     
     def params(self, params = ".all", *, dependency = None,  make_id = None, pass_as=None, action= None, exception = None, lifting = None, vectorized=None):
-        print(self.param_dict, params)
+        # print(self.param_dict, params)
         def update_inputopt(o):
             if not dependency is None:
                 o.dependency = dependency
@@ -369,24 +387,35 @@ class RessourceDeclarator:
         other = self.copy()
         for param in params:
             update_inputopt(other.param_dict[param])
-        print(other.param_dict, params)
+        # print(other.param_dict, params)
         return other
 
 class RessourceDecorator:
-    def __init__(self, name = None, *, manager = default_manager, result_on = "Return", make_result_id = make_result_id, compute_options = ComputeOptions(), readers=[memory_storage, pickled_disk_storage], writers = [memory_storage, pickled_disk_storage]):
+    def __init__(self, name = None, *, manager = default_manager, result_on = "Return", make_result_id = make_result_id, compute_options = None, readers=[memory_storage, pickled_disk_storage], writers = [memory_storage, pickled_disk_storage]):
         self.name = name
         self.result_options= ResultOptions(result_on = result_on, make_id = make_result_id)
-        self.compute_options = compute_options
+        self.compute_options = ComputeOptions(n_retries=1, progress = None, alternative_paths=[])
         self.inputopt={".all": InputOptions(dependency="RessourceId", make_id = unique_id, pass_as = "Value", action="Used", lifting=NoLifting(), exception="Propagate", _vectorized=False)}
         self.readers=readers
         self.writers=writers
         self.manager = manager
 
     def copy(self):
-        return copy.copy(self)
+        return copy.deepcopy(self)
     
     def __call__(self, f): 
         arg_names = set(inspect.signature(f).parameters.keys())
+        ignored_params = []
+        if self.compute_options.progress is None:
+            ftqdm = {a for a in arg_names if "tqdm" in a}
+            if len(set(ftqdm) - set(self.inputopt.keys())) == 1:
+                self.compute_options.progress = (set(ftqdm) - set(self.inputopt.keys())).pop()
+            else:
+                self.compute_options.progress = None
+        if not self.compute_options is None:
+            ignored_params.append(self.compute_options.progress)
+
+
         if self.name is None:
             self.name = f.__name__
         if (set(self.inputopt.keys()) - set(arg_names) - set([".all"])) == {}:
@@ -394,10 +423,14 @@ class RessourceDecorator:
         params = {}
 
         for k in arg_names:
+            if k in ignored_params:
+                continue
             if k not in self.inputopt:
                 params[k] = copy.copy(self.inputopt[".all"])
             else:
                 params[k] = self.inputopt[k]
+
+        
         
 
         return RessourceDeclarator(self.name, self.result_options, self.compute_options, self.readers, self.writers, params, f, self.manager)

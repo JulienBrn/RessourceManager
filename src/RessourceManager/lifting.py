@@ -8,7 +8,7 @@ RessourceData = None
 
 class Lifting:
     def deconstruct(self, obj) -> List[RessourceData]:pass
-    def reconstruct(self, objs: List[Any]) -> Any: pass
+    # def reconstruct(self, objs: List[Any]) -> Any: pass
 
 class NoLifting(Lifting):
     def deconstruct(self, obj) -> List[RessourceData]:
@@ -24,29 +24,37 @@ class NoLifting(Lifting):
         
 class ListLifting(Lifting):
     def deconstruct(self, obj) -> List[RessourceData]:
-        self.obj = obj
+        # self.obj = obj
         if isinstance(obj, RessourceData):
-            return [obj]
+            return [obj], lambda x: x[0]
         elif isinstance(obj, list):
             res=[]
             for x in obj:
                 if isinstance(x, RessourceData):
                     res.append(x)
-            return res
+            def refill(l):
+                i=0
+                mres=[]
+                for x in obj:
+                    if isinstance(x, RessourceData):
+                        mres.append(l[i])
+                        i+=1
+                return mres
+            return res, refill
         else:
-            return []
-    def reconstruct(self, objs: List[Any]) -> Any: 
-        if isinstance(self.obj, RessourceData):
-            return objs[0]
-        elif isinstance(self.obj, list):
-            res=[]
-            ind=0
-            for x in self.obj:
-                if isinstance(x, RessourceData):
-                    res.append(objs[ind])
-                    ind+=1
-                else:
-                    res.append(x)
-            return res
-        else:
-            return self.obj
+            return [], lambda e: obj
+    # def reconstruct(self, objs: List[Any]) -> Any: 
+    #     if isinstance(self.obj, RessourceData):
+    #         return objs[0]
+    #     elif isinstance(self.obj, list):
+    #         res=[]
+    #         ind=0
+    #         for x in self.obj:
+    #             if isinstance(x, RessourceData):
+    #                 res.append(objs[ind])
+    #                 ind+=1
+    #             else:
+    #                 res.append(x)
+    #         return res
+    #     else:
+    #         return self.obj
