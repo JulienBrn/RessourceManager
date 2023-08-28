@@ -366,6 +366,9 @@ class RessourceDeclarator:
                 param_dict={k:(arg_dict[k], self.param_dict[k]) for k in self.param_dict}, f = self.f, readers=self.readers, writers=self.writers, log=[])
         return self.manager.declare(r)
     
+    def __call__(self, *args, **kwargs):
+        return self.declare(*args, **kwargs)
+    
     def params(self, params = ".all", *, dependency = None,  make_id = None, pass_as=None, action= None, exception = None, lifting = None, vectorized=None):
         # print(self.param_dict, params)
         def update_inputopt(o):

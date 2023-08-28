@@ -1,7 +1,7 @@
 from RessourceManager.new_ressources import RessourceDecorator
 from RessourceManager.lifting import ListLifting
 from RessourceManager.storage import ReadableWriter
-import time, tqdm, logging, beautifullogger
+import time, tqdm, logging, beautifullogger, traceback
 
 logger = logging.getLogger(__name__)
 beautifullogger.setup()
@@ -45,7 +45,7 @@ try:
     r6 = f.params("a", exception="PassAsValue").declare(a=r4, b=1)
     r7 = f.params(lifting=ListLifting()).declare([r1, r2], r5)
     r8 = f.declare(f.declare(-1, 1), 2)
-    r9 = f.declare(f.declare(a=1, b = f.declare(f.declare(1, -1), f.declare(1, 1))), 2)
+    r9 = f.declare(f.declare(a=1, b = f.declare(f(1, -1), f(1, 1))), 2)
     r10 = g.declare(g.declare(0, [1,2,3,4]*40), [6,7,8]*30)
     r11 = h.declare(50)
     # print(r1.identifier, r2.identifier, r7.identifier)
@@ -64,7 +64,7 @@ except Exception:
     r = input("\n\nExceptions occured, do you want to display them? Y/n")
     print("\n\n")
     if not "n" in r.lower():
-        raise
+        traceback.print_exc()
 finally:
     r = input("\n\nDo you want to view ressource logs? N/y")
     print("\n\n")
