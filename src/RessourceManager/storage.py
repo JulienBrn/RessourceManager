@@ -72,7 +72,7 @@ class ReadableWriter(Storage):
             else:
                 open(temp_path, "a").write(str(val))
         if temp_path.exists():
-            # shutil.move(str(temp_path), str(fpath))
+            shutil.move(str(temp_path), str(fpath))
             pass
         else:
             raise Exception(f"No file created readable writer... Expecting {temp_path}")

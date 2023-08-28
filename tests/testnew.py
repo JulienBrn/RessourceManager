@@ -55,11 +55,7 @@ try:
     results = [r.result(exception=excepts, progress=tqdm.tqdm) for r  in l]
     print("\n".join([f"{r} = {res}" for r, res in zip(l, results)])) 
     if excepts !=[]:
-        # print("R9"+"\n".join([str(x) for x in r9.log]))
         raise ExceptionGroup("Exceptions while computing results", excepts)
-    # print("R2"+"\n".join([str(x) for x in r2.log]))
-    # print("R1"+"\n".join([str(x) for x in r1.log]))
-    # print("R3"+"\n".join([str(x) for x in r3.log]))
 except Exception:
     r = input("\n\nExceptions occured, do you want to display them? Y/n")
     print("\n\n")
