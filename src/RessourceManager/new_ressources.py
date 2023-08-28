@@ -75,6 +75,12 @@ class RessourceData:
     result_options: ResultOptions
     compute_options: ComputeOptions
     
+    def __repr__(self):
+        return self.identifier
+    
+    def __str__(self):
+        return self.identifier[0:50] + ('...)' if len(self.identifier) > 49 else '')
+    
     def compute_param_value(self, param: str, progress):
         option = self.param_dict[param][1]
         param_value = self.param_dict[param][0]
@@ -202,7 +208,7 @@ class RessourceData:
             else:
                 if inspect.isclass(progress):
                     progress = progress()
-                progress.set_description(f"Computing {self.identifier[0:50]}{'...)' if len(self.identifier)> 49 else ''}")
+                progress.set_description(f"Computing {self}")
                 res = self.f(**param_values, **{self.compute_options.progress: progress})
         except Exception  as e:
             try:

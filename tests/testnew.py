@@ -53,7 +53,7 @@ try:
     excepts = []
     l = [r1, r2, r3, r4, r5[0], r5[1], r6, r7, r8, r9, r10, r11, r11]
     results = [r.result(exception=excepts, progress=tqdm.tqdm) for r  in l]
-    print("\n".join([f"{r.identifier[0:50]}{'...)' if len(r.identifier) > 49 else ''} = {res}" for r, res in zip(l, results)])) 
+    print("\n".join([f"{r} = {res}" for r, res in zip(l, results)])) 
     if excepts !=[]:
         # print("R9"+"\n".join([str(x) for x in r9.log]))
         raise ExceptionGroup("Exceptions while computing results", excepts)
@@ -71,7 +71,7 @@ finally:
     if "y" in r.lower():
         for rec in l:
             logtext = '\n'.join([str(x) for x in rec.log])
-            print(f"Log for {rec.identifier[0:50]}{'...)' if len(rec.identifier) > 49 else ''}\n{logtext}\n\n")
+            print(f"Log for {rec}\n{logtext}\n\n")
 
 
 # print("\n".join([str(x) for x in r2.log]))

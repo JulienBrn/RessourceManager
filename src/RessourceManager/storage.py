@@ -17,7 +17,9 @@ class MemoryStorage(Storage):
         return self.d[r.storage_id]
     def dump(self, r, val):
         self.d[r.storage_id] = val
-
+    def __repr__(self):
+        return f"MemoryStorage"
+    
 class PickledDiskStorage(Storage):
     def __init__(self, base_folder=".cache"):
         self.base_folder=pathlib.Path(base_folder)
@@ -39,6 +41,9 @@ class PickledDiskStorage(Storage):
             shutil.move(str(temp_path), str(self.get_path(r)))
         else:
             raise Exception(f"No file created by pickle dump... Expecting {temp_path}")
+        
+    def __repr__(self):
+        return f"PickledDiskStorage({self.base_folder})"
 
 class ReadableWriter(Storage):
     def __init__(self, base_folder=".readablecache"):
@@ -71,6 +76,9 @@ class ReadableWriter(Storage):
             pass
         else:
             raise Exception(f"No file created readable writer... Expecting {temp_path}")
+        
+    def __repr__(self):
+        return f"ReadableWriter({self.base_folder})"
 
 
 memory_storage = MemoryStorage()
