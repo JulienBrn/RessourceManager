@@ -63,8 +63,15 @@ try:
 except Exception:
     r = input("\n\nExceptions occured, do you want to display them? Y/n")
     print("\n\n")
-    if not "n" in r:
+    if not "n" in r.lower():
         raise
+finally:
+    r = input("\n\nDo you want to view ressource logs? N/y")
+    print("\n\n")
+    if "y" in r.lower():
+        for rec in l:
+            logtext = '\n'.join([str(x) for x in rec.log])
+            print(f"Log for {rec.identifier[0:50]}{'...)' if len(rec.identifier) > 49 else ''}\n{logtext}\n\n")
 
 
 # print("\n".join([str(x) for x in r2.log]))
