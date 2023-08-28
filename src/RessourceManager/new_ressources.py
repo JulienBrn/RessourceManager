@@ -6,10 +6,14 @@ from RessourceManager.lifting import Lifting, NoLifting
 import RessourceManager.lifting
 from RessourceManager.id_makers import unique_id, make_result_id
 from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage
-import inspect
+import inspect, pathlib, traceback, datetime
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+exlog = pathlib.Path('./exception_log.txt')
+if not exlog.exists():
+    exlog.parent.mkdir(parents=True, exist_ok=True)
+exlog.open("a").write(f"\nStarting log for run launched at date {datetime.datetime.now()}\n\n")
 
 @dataclass
 class InputOptions:
@@ -217,10 +221,13 @@ class RessourceData:
             if not storage.has(self):
                 try:
                     storage.dump(self, res)
+                    if not storage.has(self):
+                        raise MissingRessourceError(f"Store failed for storage {storage}")
                     self.log.append(dict(action="writing ressource", storage=storage, result=res))
-                    return res
                 except Exception as e:
-                    logger.exception("Impossible to write ressource to storage. Skipping storage {}", e)
+                    logger.warning(f"Impossible to write ressource to storage. Skipping storage {storage}. Exception traceback saved in file 'exception_log.txt'")
+                    exlog = pathlib.Path('exception_log.txt')
+                    exlog.open("a").write(f"\nError storing ressource {self.identifier}\n{traceback.format_exc()}\n\n")
                 
             
     def _get(self, progress):
@@ -487,28 +494,28 @@ class RessourceDecorator:
     
     def readers(self, *args):
         other = self.copy()
-        other.readers = args
+        other.readers = list(args)
         return other
 
     def add_readers(self, *args, with_highest_priority = True):
         other = self.copy()
         if with_highest_priority:
-            other.readers = args + other.readers
+            other.readers = list(args) + other.readers
         else:
-            other.readers = other.readers + args
+            other.readers = other.readers + list(args)
         return other
     
     def writers(self, *args):
         other = self.copy()
-        other.writers = args
+        other.writers = list(args)
         return other
 
     def add_writers(self, *args, with_highest_priority = True):
         other = self.copy()
         if with_highest_priority:
-            other.writers = args + other.writers
+            other.writers = list(args) + other.writers
         else:
-            other.readers = other.writers + args
+            other.readers = other.writers + list(args)
         return other
 
 

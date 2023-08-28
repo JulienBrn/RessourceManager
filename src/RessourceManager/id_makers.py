@@ -20,9 +20,9 @@ def unique_id(v: Any):
    
 def hashed_id(v: Any):
     s = unique_id(v)
-    return hashlib.md5(s).digest()
+    return hashlib.md5(s).hexdigest()
 
 def make_result_id(name, param_dict, for_storage):
     arg_list = [f"{k}={val}" for k,val in sorted(param_dict.items())]
     id=f"{name}({', '.join(arg_list)})"
-    return id if not for_storage else hashlib.md5(id.encode()).digest()
+    return id if not for_storage else hashlib.md5(id.encode()).hexdigest()

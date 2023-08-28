@@ -1,8 +1,12 @@
 from RessourceManager.new_ressources import RessourceDecorator
 from RessourceManager.lifting import ListLifting
-import time, tqdm
+from RessourceManager.storage import ReadableWriter
+import time, tqdm, logging, beautifullogger
 
-print("f(a,b) adds a and b if a!=0")
+logger = logging.getLogger(__name__)
+beautifullogger.setup()
+
+print("f(a,b) adds a and b if a!=0 and raises an exception if a=0")
 
 @RessourceDecorator()
 def f(a, b):
@@ -12,7 +16,7 @@ def f(a, b):
 
 print("g(s, l) adds s and the sum of the list l")
 
-@RessourceDecorator()
+@RessourceDecorator().add_writers(ReadableWriter())
 def g(s, l, tqdm: tqdm.tqdm ):
     v = s
     tqdm.total = tqdm.total+len(l) if not tqdm.total is None else len(l)
@@ -31,6 +35,7 @@ def h(s, tqdm: tqdm.tqdm ):
         tqdm.update()
     return s
 
+print("\n\n")
 try:
     r1 = f.declare(b=1, a=2)
     r2 = f.params("a", dependency="Value").declare(r1, b=3)
@@ -48,7 +53,7 @@ try:
     excepts = []
     l = [r1, r2, r3, r4, r5[0], r5[1], r6, r7, r8, r9, r10, r11, r11]
     results = [r.result(exception=excepts, progress=tqdm.tqdm) for r  in l]
-    print("\n".join([f"{r.identifier[0:50]}{'...)' if len(r.identifier > 49) else ''} = {res}" for r, res in zip(l, results)])) 
+    print("\n".join([f"{r.identifier[0:50]}{'...)' if len(r.identifier) > 49 else ''} = {res}" for r, res in zip(l, results)])) 
     if excepts !=[]:
         # print("R9"+"\n".join([str(x) for x in r9.log]))
         raise ExceptionGroup("Exceptions while computing results", excepts)
