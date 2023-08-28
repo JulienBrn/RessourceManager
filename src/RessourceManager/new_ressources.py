@@ -51,13 +51,16 @@ class MissingRessourceError(RessourceException):pass
 class LoadingRessourceError(RessourceException):pass
 class VectorizationError(Exception):pass
 
+
+
 @dataclass
 class RessourceData:
+    num_declarations= {}
     # Individual
 
         ## Individual non redundant information
     param_dict: Dict[str, Tuple[Any, InputOptions]]
-    log: Any
+    log: logging.Logger
 
         ## Kept for efficiency
     # depends_on: Set[RessourceData]
@@ -80,7 +83,22 @@ class RessourceData:
     
     def __str__(self):
         return self.identifier[0:50] + ('...)' if len(self.identifier) > 49 else '')
-    
+    def __post_init__(self):
+        # global num_declarations
+        # print("POSTINIT")
+        if not self.group_name in RessourceData.num_declarations:
+            RessourceData.num_declarations[self.group_name] = 0
+        else:
+            RessourceData.num_declarations[self.group_name]+=1
+        self.log = logging.getLogger(f"{__name__}.{self.group_name}.{RessourceData.num_declarations[self.group_name]}")
+        def new_info(*args, **kwargs):
+            self.log._info(*args, **kwargs)
+            self.log.infos.append({"args": args, "kwargs": kwargs})
+
+        self.log._info = self.log.info
+        self.log.infos=[]
+        self.log.info = new_info
+
     def compute_param_value(self, param: str, progress):
         option = self.param_dict[param][1]
         param_value = self.param_dict[param][0]
@@ -106,7 +124,7 @@ class RessourceData:
                 raise NotImplementedError(f"Unknown input option combination: action={option.action}, pass_as={option.pass_as}")
         
         res = reconstruct(values)
-        self.log.append(dict(action="Computed param value", param=param, val=res, values=values))
+        self.log.info("", dict(action='Computed param value', param=param, val=res, values=values))
         return res
     
     def compute_param_id(self, param: str, for_storage: bool) -> str:
@@ -136,9 +154,9 @@ class RessourceData:
             param_id_dict={k: self.compute_param_id(k, for_storage) for k,(v, opt) in self.param_dict.items() if not opt.dependency=="Ignore"}
             id = self.result_options.make_id(self.group_name, param_id_dict, for_storage)
         except Exception as e:
-                self.log.append(dict(action="computing_id", result=e, time=None, computation_time=None, n_errors=1, n_warnings=0))
+                # self.log.append(dict(action="computing_id", result=e, time=None, computation_time=None, n_errors=1, n_warnings=0))
                 raise RessourceIDError(f"Error while computing id for ressource of group {self.group_name}") from e
-        self.log.append(dict(action="computing_id", for_storage=for_storage, result=id, time=None, computation_time=None, n_errors=0, n_warnings=0))
+        self.log.info("{}", dict(action="computing_id", for_storage=for_storage, result=id, time=None, computation_time=None, n_errors=0, n_warnings=0))
         return id
 
     @functools.cached_property
@@ -161,7 +179,7 @@ class RessourceData:
             if storage.has(self):
                 try:
                     res = storage.load(self)
-                    self.log.append(dict(action="loading_ressource", storage=storage, time=None, computation_time=None, n_errors=0, n_warnings=0))
+                    self.log.info("", dict(action="loading_ressource", storage=storage, time=None, computation_time=None, n_errors=0, n_warnings=0))
                     return res
                 except Exception as e:
                     try:
@@ -178,7 +196,7 @@ class RessourceData:
     
     
     def _get_params(self, progress):
-        self.log.append(dict(action="computating_params_start"))
+        self.log.info("", dict(action="computating_params_start"))
         param_values = {k:self.compute_param_value(k, progress) for k in self.param_dict.keys()}
         propagated_exceptions =[]
         for k in param_values.keys():
@@ -197,11 +215,11 @@ class RessourceData:
         else:
             if self.result_options.result_on != "Return":
                 param_values[self.result_options.result_on[1]] = self.get_location(self.result_options.result_on[0])
-            self.log.append(dict(action="computating_params_end", value = param_values))
+            self.log.info("", dict(action="computating_params_end", value = param_values))
             return param_values
     
     def _compute(self, param_values, progress):
-        self.log.append(dict(action="computation_start"))
+        self.log.info("",dict(action="computation_start"))
         try:
             if self.compute_options.progress is None:
                 res = self.f(**param_values)
@@ -215,7 +233,7 @@ class RessourceData:
                 raise ComputationRessourceError(f"Error in while computing ressource {self.identifier}") from e
             except ComputationRessourceError as excpt:
                 res = excpt
-        self.log.append(dict(action="computation_end"))
+        self.log.info("",dict(action="computation_end"))
 
         if self.result_options.result_on != "Return":
             if not self.result_options.result_on[0].has(self):
@@ -229,9 +247,9 @@ class RessourceData:
                     storage.dump(self, res)
                     if not storage.has(self):
                         raise MissingRessourceError(f"Store failed for storage {storage}")
-                    self.log.append(dict(action="writing ressource", storage=storage, result=res))
+                    self.log.info("",dict(action="writing ressource", storage=storage, result=res))
                 except Exception as e:
-                    logger.warning(f"Impossible to write ressource to storage. Skipping storage {storage}. Exception traceback saved in file 'exception_log.txt'")
+                    self.log.warning(f"Impossible to write ressource to storage. Skipping storage {storage}. Exception traceback saved in file 'exception_log.txt'")
                     exlog = pathlib.Path('exception_log.txt')
                     exlog.open("a").write(f"\nError storing ressource {self.identifier}\n{traceback.format_exc()}\n\n")
                 
@@ -363,13 +381,13 @@ class RessourceDeclarator:
             for i in range(list(lens.values())[0]):
                 r = RessourceData(
                     group_name = self.name, compute_options=self.compute_options, result_options=self.result_options, 
-                    param_dict={k:(arg_dict[k] if not k in vectorized_args else arg_dict[k][i], self.param_dict[k]) for k in self.param_dict}, f = self.f, readers=self.readers, writers=self.writers, log=[])
+                    param_dict={k:(arg_dict[k] if not k in vectorized_args else arg_dict[k][i], self.param_dict[k]) for k in self.param_dict}, f = self.f, readers=self.readers, writers=self.writers, log=None)
                 l.append(self.manager.declare(r))
             return l
         else:
             r = RessourceData(
                 group_name = self.name, compute_options=self.compute_options, result_options=self.result_options, 
-                param_dict={k:(arg_dict[k], self.param_dict[k]) for k in self.param_dict}, f = self.f, readers=self.readers, writers=self.writers, log=[])
+                param_dict={k:(arg_dict[k], self.param_dict[k]) for k in self.param_dict}, f = self.f, readers=self.readers, writers=self.writers, log=None)
         return self.manager.declare(r)
     
     def __call__(self, *args, **kwargs):

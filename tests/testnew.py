@@ -4,7 +4,7 @@ from RessourceManager.storage import ReadableWriter
 import time, tqdm, logging, beautifullogger, traceback
 
 logger = logging.getLogger(__name__)
-beautifullogger.setup()
+beautifullogger.setup(warning_level_modules = ["RessourceManager"])
 
 print("f(a,b) adds a and b if a!=0 and raises an exception if a=0")
 
@@ -70,7 +70,7 @@ finally:
     print("\n\n")
     if "y" in r.lower():
         for rec in l:
-            logtext = '\n'.join([str(x) for x in rec.log])
+            logtext = '\n'.join([str(x["args"][1]) for x in rec.log.infos])
             print(f"Log for {rec}\n{logtext}\n\n")
 
 
