@@ -15,7 +15,7 @@ class Storage:
           The actual value and type returned is storage dependant.
 
         Storages usually need to use unique_ids for tasks, for example to generate unique paths.
-        The bytes string attribute storage_id of the task should be used for that purpose, 
+        The string attribute storage_id of the task should be used for that purpose, 
         however, one may use the additional information of the ressource either 
         - to generate additional information
         - organize task results (for example adding metadata in a database)
