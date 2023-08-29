@@ -10,32 +10,136 @@ JsonSerializable = NewType("JsonSerializable", Any)
 class Storage:
     """
         Abstract class for the storage of task results. 
-        The following methods are required:
-        - has(task) returns whether a task has been stored in this storage
-        - load(task) loads the stored result for the task
-        - dump(task, val) stores in this storage val as the result for the task
-        - remove(task) removes the stored value of a task
-        - get_location(task) should return the location at which the task results will be/is stored.
-          The actual value and type returned is storage dependant.
-        - lock(task) is used to force task results to be kept:
-            A Storage may "unstore" a value at any point during execution (for example when memory is overused), except for the tasks that are locked.
-            Note that explicit calls, such as remove, will still work.
-          
-        Storages usually need to use unique_ids for tasks, for example to generate unique paths.
-        The string attribute storage_id of the task should be used for that purpose, 
-        however, one may use the additional information of the ressource either 
-        - to generate additional information
-        - organize task results (for example adding metadata in a database)
-        
-        Note that storages may remove tasks results whenever they wish, for example to avoid running out of memory 
+        A storage is responsable for storing information about a task result and being able to retrieve it.
+        Note that storages may remove values stored whenever they wish (except when a value is locked), for example to avoid running out of memory.
+
+        Storing Location and storage_id
+        ----------
+            Where the task result is stored is up to the storage. 
+            However, the storage_id attribute of a task should uniquely determine the result of has/load functions.
+            It is thus highly advised to use it (and not much else) to create the location at which the result is stored.
+            However, additional information may be used: for example in database storage, one may use additional fields specific to the task, **as long as** 
+            the storage_id is used as primary key.
+
+            Furthermore, a task groups name is uniquely defined by the storage_id and may be used additionally to the storage_id safely.
+
+        Storage format
+        ----------
+            what information about the result value is stored and in which format is stored is up to the storage. 
+            It is not necessary to have load(dump(val)) = val, as the storage can be used for other purposes (for example saving metadata).
+            The property load(dump(val)) = val is only necessary for storages used as checkpoints (see options of a Task).
+
+        Storage volatility
+        ----------
+            In order to handle all kinds of storages, especially storages in memory which may run out of space, 
+            a storage may unstore the results of a task at any point, **except** when locked.
+
+            Locking is used especially during computation to ensure that a result used for another task in not deleted before being passed to the other task.
+            Note that locking may be hard to protect from users (for example file deletion)... 
+
+
+        Methods
+        ----------
+            has(task) 
+                returns whether a task has been stored in this storage
+
+            load(task) 
+                loads the stored result for the task
+
+            dump(task, val) 
+                stores in this storage val as the result for the task
+
+            remove(task) 
+                removes the stored value of a task
+
+            get_location(task) 
+                should return the location at which the task results will be/is stored.
+                The actual value and type returned is storage dependant.
+
+            lock(task) 
+                Is used to force task results to be kept:
+                A Storage may "unstore" a value at any point during execution (for example when memory is overused), except for the tasks that are locked.
+                Note that explicit calls, such as remove, will still work.
     """
     
-    def has(self, task: Task) -> bool: raise NotImplementedError
-    def load(self, task: Task) -> Any: raise NotImplementedError
-    def dump(self, task: Task, val: Any) -> NoReturn: raise NotImplementedError
-    def remove(self, task: Task) -> NoReturn: raise NotImplementedError
-    def get_location(self, task: Task) -> Any: raise NotImplementedError
-    def lock(self, task: Task | List[Task]) -> ContextManager[None]: raise NotImplementedError
+    def has(self, task: Task) -> bool: 
+        """
+            Parameters
+            ----------
+                task: Task
+                    the task that we want to know if a result is stored
+            Returns
+            -------
+                Whether the task result is stored
+        """
+        raise NotImplementedError
+    
+    def load(self, task: Task) -> Any: 
+        """
+            Parameters
+            ----------
+                task: Task
+                    the task whose result information we want to load
+            Returns
+            -------
+                The loaded value.
+            Raises
+            -------
+                MissingTaskResult if the storage does not have the task
+        """
+        raise NotImplementedError
+    def dump(self, task: Task, val: Any) -> NoReturn: 
+        """
+            Parameters
+            ----------
+                task: Task
+                    the task whose result information we want to store
+                val: Any
+                    the computation result of the task
+        """
+        raise NotImplementedError
+    def remove(self, task: Task) -> NoReturn: 
+        """
+            Explicitly removes the result information of a task. 
+            Note that this method will remove the task result, even if the task is locked.
+            No errors are given if the result information of a task is not stored.
+
+            Parameters
+            ----------
+                task: Task
+                    the task whose result information we want to remove
+        """
+        raise NotImplementedError
+    def get_location(self, task: Task) -> Any: 
+        """
+            Parameters
+            ----------
+                task: Task
+                    the task whose storage location we want to get
+            Returns
+            -------
+                The location for this storage. This value is used for Task that take other tasks locations as inputs.
+                Note that the task does not need to be computed to know its location.
+        """
+        raise NotImplementedError
+    def lock(self, task: Task | List[Task]) -> ContextManager[None]: 
+        """
+            Parameters
+            ----------
+                task: Task | List[Task]
+                    the task whose result information we want to lock (no automatic removal by the storage)
+            Returns
+            -------
+                a context manager that locks the task from automatic removal
+            Note
+            -------
+                The task does not need to be already computed in order to lock it, a common pattern in computation engines is the following:
+                with storage.lock(task):
+                    task.compute()
+                    res = f(task) 
+                where f is some function that uses the result information of a task
+        """
+        raise NotImplementedError
 
 class Lock:
     def __init__(self, task, storage):
