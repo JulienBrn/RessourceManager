@@ -3,9 +3,10 @@ from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, Typ
 import pandas as pd, tqdm, numpy as np
 import logging, hashlib, functools, pathlib, pickle, shutil, threading, psutil
 from dataclasses import dataclass
-from RessourceManager.task import Task
 
-JsonSerializable = NewType("JsonSerializable", Any)
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from RessourceManager.task import Task
 
 class Storage:
     """
@@ -369,5 +370,6 @@ class ReadableDiskWriter(Storage):
 
 
 memory_storage = MemoryStorage()
+memory_metadata_storage = MemoryMetadataStorage()
 pickled_disk_storage = PickledDiskStorage()
 default_human_writer = ReadableDiskWriter()
