@@ -4,8 +4,9 @@ import pandas as pd, tqdm, numpy as np
 import logging, hashlib, functools
 from RessourceManager.lifting import EmbeddedTaskHandler
 from RessourceManager.id_makers import unique_id, make_result_id
-from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage
-import inspect, pathlib, traceback, datetime, threading, multiprocessing
+from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, JsonSerializable
+import inspect, pathlib, traceback, datetime, threading, multiprocessing, graphviz
+from RessourceManager.task_manager import TaskManager
 from dataclasses import dataclass
 
 @dataclass
@@ -83,6 +84,28 @@ class ComputeOptions:
     n_retries: int
     constraints: ComputationConstraints
     alternative_paths: List[Any] #Alternative computation paths dependant to what has already been computed
+    metadata: Optional[Callable[[Task, Any], JsonSerializable]] = lambda t, v: {
+        "task": {
+            "ids": {
+                "identifier": t.identifier,
+                "storage_id": t.storage_id
+            },
+            "param_dict": {
+                k:{
+                    "value": str(p),
+                    "type": type(p),
+                    "task_ids": None if not isinstance(p, Task) else {"identifier":p.identifier, "storage_id": p.storage_id},
+                    "options": o
+                }
+                for k, (p, o) in t.param_dict.items()
+            }
+        },
+        "returned": {
+            "type": type(v),
+            "shape": v.shape if hasattr(v, "shape") else None,
+            "len": len(v) if hasattr(v, "__len__") else None,
+        }
+    }
     
 @dataclass 
 class StorageOptions:
@@ -90,20 +113,24 @@ class StorageOptions:
         Describes where a task should be attempted to be read and where a task should be attempted to be written.
         If a task can be both read and written from a same storage, we call that storage a checkpoint.
     """
-    writers: List[Storage]
-    readers: List[Storage]
+    writers: List[Storage]  = [memory_storage, pickled_disk_storage]
+    readers: List[Storage] = [memory_storage, pickled_disk_storage]
+
+ComputationResult = Tuple[Storage, str]
 
 
-
+@dataclass
 class Task:
     param_dict: Dict[str, Tuple[Any, TaskParamOptions]]
     log: logging.Logger
-    history: pd.DataFrame
+    history: pd.DataFrame = pd.DataFrame(columns=["date", "action", "result", "comment"])
     storage_opt: StorageOptions
     group: TaskGroup
     f: Callable[..., Any]
     compute_options: ComputeOptions
-
+    used_by: List[Task] = []
+    manager: TaskManager
+    computation_status: Literal["running", "loading", "none"] = "none"
 
     @functools.cached_property
     def identifier(self): raise NotImplementedError
@@ -115,5 +142,24 @@ class Task:
     def short_name(self): raise NotImplementedError
     
     def write_on_storage(self, s: Storage, progress = tqdm.tqdm): raise NotImplementedError
-    def result(self, exception: (Literal["raise", "return"] | List[Exception]) = "raise", progress=tqdm.tqdm ): raise NotImplementedError
+    def result(self, exception: (Literal["raise", "return"] | List[Exception]) = "raise", progress=tqdm.tqdm): raise NotImplementedError
     def invalidate(self): raise NotImplementedError
+    def add_downstream_task(self, tasks: Task | List[Task]): raise NotImplementedError
+    def get_dependency_graph(self, which=Literal["upstream", "downstream", "both"]) -> graphviz.Digraph: raise NotImplementedError
+    def get_history(self) -> pd.DataFrame: raise NotImplementedError
+    def get_stats(self) -> pd.DataFrame: raise NotImplementedError
+    def can_get_result_as_python_object(self) -> bool: raise NotImplementedError
+
+    def _get(self, ) -> ComputationResult: raise NotImplementedError
+
+
+class TaskManager:
+    def __init__(self): raise NotImplementedError
+    def declare(self, task: Task): raise NotImplementedError
+    def invalidate(self, tasks: Task | List[Task]): raise NotImplementedError
+    def get_dependency_graph(self, groups_only=False) -> Any: raise NotImplementedError
+    def set_computation_engine(self, e: TaskComputationEngine): pass
+
+class TaskComputationEngine:
+    def write_on_storage(self, tasks: Task | List[Task], s: Storage, progress = tqdm.tqdm): raise NotImplementedError
+    def result(self, tasks: Task | List[Task], exception: (Literal["raise", "return"] | List[Exception]) = "raise", progress=tqdm.tqdm) -> Any | List[Any]: raise NotImplementedError

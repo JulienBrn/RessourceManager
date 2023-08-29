@@ -1,7 +1,11 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn
+from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn, NewType, ContextManager
 import pandas as pd, tqdm, numpy as np
-import logging, hashlib, functools, pathlib, pickle, shutil
+import logging, hashlib, functools, pathlib, pickle, shutil, threading, psutil
+from dataclasses import dataclass
+from RessourceManager.task import Task
+
+JsonSerializable = NewType("JsonSerializable", Any)
 
 class Storage:
     """
@@ -13,7 +17,10 @@ class Storage:
         - remove(task) removes the stored value of a task
         - get_location(task) should return the location at which the task results will be/is stored.
           The actual value and type returned is storage dependant.
-
+        - lock(task) is used to force task results to be kept:
+            A Storage may "unstore" a value at any point during execution (for example when memory is overused), except for the tasks that are locked.
+            Note that explicit calls, such as remove, will still work.
+          
         Storages usually need to use unique_ids for tasks, for example to generate unique paths.
         The string attribute storage_id of the task should be used for that purpose, 
         however, one may use the additional information of the ressource either 
@@ -22,34 +29,126 @@ class Storage:
         
         Note that storages may remove tasks results whenever they wish, for example to avoid running out of memory 
     """
-    def has(self, task) -> bool: raise NotImplementedError
-    def load(self, task) -> Any: raise NotImplementedError
-    def dump(self, task, val) -> NoReturn: raise NotImplementedError
-    def remove(self, task) -> NoReturn: raise NotImplementedError
-    def get_location(self, task) -> Any: raise NotImplementedError
+    
+    def has(self, task: Task) -> bool: raise NotImplementedError
+    def load(self, task: Task) -> Any: raise NotImplementedError
+    def dump(self, task: Task, val: Any) -> NoReturn: raise NotImplementedError
+    def remove(self, task: Task) -> NoReturn: raise NotImplementedError
+    def get_location(self, task: Task) -> Any: raise NotImplementedError
+    def lock(self, task: Task | List[Task]) -> ContextManager[None]: raise NotImplementedError
+
+class Lock:
+    def __init__(self, task, storage):
+        self.tasks = [task]
+        self.storage = storage
+    def __enter__(self):
+        pass
+    def __exit__(self):
+        self.storage.locks.remove(self)
+
 
 class MemoryStorage(Storage): 
     """
         Memory storage of task results (memoization).
         The technique used by this storage is simply a dictionary with keys task.storage_id.
     """
-    def __init__(self):
-        self.d = {}
+    values: Dict[str, Any]
+    metadata: Dict[str, Any]
+    timer: Optional[threading.Timer]
+    check_after_dump: bool
+
+    def __init__(self, min_available: float = 8, check_timer: Optional[float]= 10, check_after_dump: bool = True):
+        self.locks = {}
+        self.values = {}
+        self.min_available = min_available
+        if not check_timer is None:
+            self.timer = threading.Timer(check_timer, lambda: self._free_if_necessary())
+            self.timer.start()
+        else:
+            self.timer = None
+        self.check_after_dump = check_after_dump
+
     def has(self, task):
-        return task.storage_id in self.d
+        return task.storage_id in self.values
     
     def load(self, task):
-        return self.d[task.storage_id]
+        return self.values[task.storage_id]
     
-    def dump(self, task, val):
-        self.d[task.storage_id] = val
+    def dump(self, task, val: Any):
+        self.values[task.storage_id] = val
+        if self.check_after_dump:
+            self._free_if_necessary()
 
     def remove(self, task):
         if task.storage_id in self.d:
-            del self.d[task.storage_id]
+            del self.values[task.storage_id]
 
+    def get_location(self, task: Task):
+        return task.storage_id
+        
     def __repr__(self):
         return f"MemoryStorage"
+    
+    def lock(self, task) -> ContextManager[None]:
+        lock = Lock(task.storage_id)
+        self.locks.add(lock)
+        return lock
+    
+    def free_up_space(self):
+        for id in self.values:
+            if not id in {i for l in self.locks for i in l.tasks}:
+                del self.values[id]
+
+    def _free_if_necessary(self):
+        mem = psutil.virtual_memory()
+        if mem.available/1000000000 < self.min_available: 
+            self.free_up_space()
+
+
+def shape_type_metadata(t: Task, val: Any):
+    return {
+        "shape": val.shape if hasattr(val, "shape") else None,
+        "len": len(val) if hasattr(val, "__len__") else None,
+        "type": type(val)
+    }
+
+class MemoryMetadataStorage(Storage): 
+    """
+        Memory storage of metadata of task results.
+        The technique used by this storage is simply a dictionary with keys task.storage_id.
+    """
+    metadata: Dict[str, Any]
+    f: Callable[[Task, Any], Any]
+
+    def __init__(self, f: Callable[[Task, Any], Any] = shape_type_metadata):
+        self.locks = {}
+        self.metadata = {}
+        self.f = f
+
+    def has(self, task):
+        return task.storage_id in self.metadata
+    
+    def load(self, task):
+        return self.metadata[task.storage_id]
+    
+    def dump(self, task, val: Any):
+        self.metadata[task.storage_id] = self.f(task, val)
+
+    def remove(self, task):
+        if task.storage_id in self.d:
+            del self.metadata[task.storage_id]
+
+    def __repr__(self):
+        return f"MemoryMetadataStorage"
+    
+    def lock(self, task) -> ContextManager[None]:
+        lock = Lock(task.storage_id)
+        self.locks.add(lock)
+        return lock
+    
+class NoLock:
+    def __enter__(self):pass
+    def __exit__(self):pass
     
 class PickledDiskStorage(Storage):
     """
@@ -88,11 +187,16 @@ class PickledDiskStorage(Storage):
     def remove(self, task):
         if self.get_location(task).exists():
             shutil.rmtree(str(self.get_location(task)))
+
+    def lock(self, task) -> ContextManager[None]:
+        return NoLock()
         
     def __repr__(self):
         return f"PickledDiskStorage({self.base_folder})"
+    
 
-class ReadableWriter(Storage):
+
+class ReadableDiskWriter(Storage):
     """
         Default implementation of a human readable storage. 
         However, it is very hard to design a practical readable storage such that load(dump(val)) = val,
@@ -134,10 +238,13 @@ class ReadableWriter(Storage):
         if self.get_location(task).exists():
             shutil.rmtree(str(self.get_location(task)))
 
+    def lock(self, task) -> ContextManager[None]:
+        return NoLock()
+    
     def __repr__(self):
         return f"ReadableWriter({self.base_folder})"
 
 
 memory_storage = MemoryStorage()
 pickled_disk_storage = PickledDiskStorage()
-default_human_writer = ReadableWriter()
+default_human_writer = ReadableDiskWriter()
