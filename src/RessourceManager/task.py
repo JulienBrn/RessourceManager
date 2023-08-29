@@ -4,7 +4,7 @@ import pandas as pd, tqdm, numpy as np
 import logging, hashlib, functools
 from RessourceManager.lifting import EmbeddedTaskHandler
 from RessourceManager.id_makers import unique_id, make_result_id
-from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, JsonSerializable
+from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, return_storage, NoReturn
 import inspect, pathlib, traceback, datetime, threading, multiprocessing, graphviz
 from RessourceManager.task_manager import TaskManager
 from dataclasses import dataclass
@@ -79,7 +79,7 @@ class ComputeOptions:
 
         Other attributes should be auto-descriptive
     """
-    result_location: Storage
+    result_location: Storage = return_storage
     progress: bool
     n_retries: int = 1
     constraints: ComputationConstraints
@@ -127,9 +127,8 @@ class Task:
     def get_dependency_graph(self, which=Literal["upstream", "downstream", "both"]) -> graphviz.Digraph: raise NotImplementedError
     def get_history(self) -> pd.DataFrame: raise NotImplementedError
     def get_stats(self) -> pd.DataFrame: raise NotImplementedError
-    def can_get_result_as_python_object(self) -> bool: raise NotImplementedError
 
-    def _compute(self, ) -> ComputationResult: raise NotImplementedError
+    def _compute(self) -> NoReturn: raise NotImplementedError
 
 
 class TaskManager:
