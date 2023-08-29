@@ -46,7 +46,7 @@ class TaskParamOptions:
         Note that input parameters should have __repr__ defined
     """
     dependency: Literal["ignore", "value", "graph"]
-    pass_as: Literal["value"] | Tuple[Literal["task"], Literal["computed", "nocompute", "may_compute"]] | Tuple[Literal["location"], Storage | List[Storage]] = "value"
+    pass_as: Literal["value"] | Tuple[Literal["task"], Literal["computed", "nocompute"]] | Tuple[Literal["location"], Storage | List[Storage]] = "value"
     exception: Literal["propagate", "exception_as_arg"] = "propagate"
     embedded_task_retriever: Callable[[Any], Tuple[List[Task], Callable[[List[Any]], Any]]] = \
         lambda obj: ([], lambda l:obj) if not isinstance(obj, Task) else ([obj], lambda l:l[0])
@@ -79,33 +79,11 @@ class ComputeOptions:
 
         Other attributes should be auto-descriptive
     """
-    result_location: Literal["returned"] | Storage = "returned"
+    result_location: Storage
     progress: bool
-    n_retries: int
+    n_retries: int = 1
     constraints: ComputationConstraints
     alternative_paths: List[Any] #Alternative computation paths dependant to what has already been computed
-    metadata: Optional[Callable[[Task, Any], JsonSerializable]] = lambda t, v: {
-        "task": {
-            "ids": {
-                "identifier": t.identifier,
-                "storage_id": t.storage_id
-            },
-            "param_dict": {
-                k:{
-                    "value": str(p),
-                    "type": type(p),
-                    "task_ids": None if not isinstance(p, Task) else {"identifier":p.identifier, "storage_id": p.storage_id},
-                    "options": o
-                }
-                for k, (p, o) in t.param_dict.items()
-            }
-        },
-        "returned": {
-            "type": type(v),
-            "shape": v.shape if hasattr(v, "shape") else None,
-            "len": len(v) if hasattr(v, "__len__") else None,
-        }
-    }
     
 @dataclass 
 class StorageOptions:
@@ -115,9 +93,6 @@ class StorageOptions:
     """
     writers: List[Storage]  = [memory_storage, pickled_disk_storage]
     readers: List[Storage] = [memory_storage, pickled_disk_storage]
-
-ComputationResult = Tuple[Storage, str]
-
 
 @dataclass
 class Task:
@@ -129,8 +104,12 @@ class Task:
     f: Callable[..., Any]
     compute_options: ComputeOptions
     used_by: List[Task] = []
+    
     manager: TaskManager
     computation_status: Literal["running", "loading", "none"] = "none"
+    
+    @functools.cached_property #For each parameter the list of tasks in it
+    def task_dependencies(self) -> Dict[str, List[Task]]: raise NotImplementedError 
 
     @functools.cached_property
     def identifier(self): raise NotImplementedError
@@ -150,7 +129,7 @@ class Task:
     def get_stats(self) -> pd.DataFrame: raise NotImplementedError
     def can_get_result_as_python_object(self) -> bool: raise NotImplementedError
 
-    def _get(self, ) -> ComputationResult: raise NotImplementedError
+    def _compute(self, ) -> ComputationResult: raise NotImplementedError
 
 
 class TaskManager:

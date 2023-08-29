@@ -143,13 +143,61 @@ class Storage:
         raise NotImplementedError
 
 class _Lock:
-    def __init__(self, tasks: List[Task], storage):
+    def __init__(self, tasks: List[str], storage):
         self.tasks = tasks
         self.storage = storage
     def __enter__(self):
-        pass
-    def __exit__(self):
-        self.storage.locks.remove(self)
+        for id in self.tasks:
+            if not id in self.storage.lock_counters:
+                self.storage.lock_counters[id] =0
+            self.storage.lock_counters[id]+=1
+    def __exit__(self, callback = lambda x:None):
+        for id in self.tasks:
+            self.storage.lock_counters[id]-=1
+            if self.storage.lock_counters[id] ==0:
+                callback(id)
+
+
+
+class ReturnStorage(Storage):
+    values: Dict[str, Any]
+    lock_counters: Dict[str, int]
+
+    def __init__(self):
+        self.lock_counters = {}
+        self.values = {}
+
+    def has(self, task):
+        return task.storage_id in self.values
+    
+    def load(self, task):
+        return self.values[task.storage_id]
+    
+    def locked(self, task):
+        return task.storage_id in self.lock_counters and self.lock_counters[task.storage_id] >0
+    
+    def dump(self, task, val: Any):
+        if self.locked(task):
+            self.values[task.storage_id] = val
+
+    def remove(self, task):
+        if task.storage_id in self.d:
+            del self.values[task.storage_id]
+
+    def get_location(self, task: Task):
+        return task.storage_id
+        
+    def __repr__(self):
+        return f"ReturnStorage"
+    
+    def lock(self, task: Task | List[Task]) -> ContextManager[None]:
+        task = [task] if not isinstance(task, List) else task
+        lock = _Lock([t.storage_id for t in task], callback=lambda id: self.values.pop(id))
+        return lock
+    
+
+    
+
 
 
 class MemoryStorage(Storage): 
@@ -160,7 +208,7 @@ class MemoryStorage(Storage):
         The main parameters are about when to free up the memory.
     """
     values: Dict[str, Any]
-    metadata: Dict[str, Any]
+    lock_counters: Dict[str, int]
     timer: Optional[threading.Timer]
     check_after_dump: bool
 
@@ -179,7 +227,7 @@ class MemoryStorage(Storage):
                 To never free up space, simply set min_available to 0 and/or no checks
         """
 
-        self.locks = {}
+        self.lock_counters = {}
         self.values = {}
         self.min_available = min_available
         if not check_timer is None:
@@ -210,15 +258,19 @@ class MemoryStorage(Storage):
     def __repr__(self):
         return f"MemoryStorage"
     
+    def locked(self, id):
+        if isinstance(id, Task):
+            id = id.storage_id
+        return id in self.lock_counters and self.lock_counters[id] >0
+    
     def lock(self, task: Task | List[Task]) -> ContextManager[None]:
         task = [task] if not isinstance(task, List) else task
         lock = _Lock([t.storage_id for t in task])
-        self.locks.add(lock)
         return lock
     
     def free_up_space(self):
         for id in self.values:
-            if not id in {i for l in self.locks for i in l.tasks}:
+            if self.locked(id):
                 del self.values[id]
 
     def _free_if_necessary(self):
