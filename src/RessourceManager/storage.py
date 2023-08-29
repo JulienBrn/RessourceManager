@@ -141,9 +141,9 @@ class Storage:
         """
         raise NotImplementedError
 
-class Lock:
-    def __init__(self, task, storage):
-        self.tasks = [task]
+class _Lock:
+    def __init__(self, tasks: List[Task], storage):
+        self.tasks = tasks
         self.storage = storage
     def __enter__(self):
         pass
@@ -155,6 +155,8 @@ class MemoryStorage(Storage):
     """
         Memory storage of task results (memoization).
         The technique used by this storage is simply a dictionary with keys task.storage_id.
+
+        The main parameters are about when to free up the memory.
     """
     values: Dict[str, Any]
     metadata: Dict[str, Any]
@@ -162,6 +164,20 @@ class MemoryStorage(Storage):
     check_after_dump: bool
 
     def __init__(self, min_available: float = 8, check_timer: Optional[float]= 10, check_after_dump: bool = True):
+        """
+            Parameters
+            ----------
+                min_available: float
+                    going under min_available (in Gb) memory available triggers the unstoring of all unlocked tasks results
+                check_timer: Optional[float]
+                    if not None, creates a threading.Timer that checks the available memory each check_timer seconds
+                check_after_dump: bool
+                    if True, the available memory is checked after each dump
+            Note
+            -------
+                To never free up space, simply set min_available to 0 and/or no checks
+        """
+
         self.locks = {}
         self.values = {}
         self.min_available = min_available
@@ -193,8 +209,9 @@ class MemoryStorage(Storage):
     def __repr__(self):
         return f"MemoryStorage"
     
-    def lock(self, task) -> ContextManager[None]:
-        lock = Lock(task.storage_id)
+    def lock(self, task: Task | List[Task]) -> ContextManager[None]:
+        task = [task] if not isinstance(task, List) else task
+        lock = _Lock([t.storage_id for t in task])
         self.locks.add(lock)
         return lock
     
@@ -205,7 +222,7 @@ class MemoryStorage(Storage):
 
     def _free_if_necessary(self):
         mem = psutil.virtual_memory()
-        if mem.available/1000000000 < self.min_available: 
+        if mem.available/10**9 < self.min_available: 
             self.free_up_space()
 
 
@@ -218,8 +235,8 @@ def shape_type_metadata(t: Task, val: Any):
 
 class MemoryMetadataStorage(Storage): 
     """
-        Memory storage of metadata of task results.
-        The technique used by this storage is simply a dictionary with keys task.storage_id.
+        Similar to MemoryStorage without the parameters to handle when memory is freed but with a parameter to specify what metadata is stored 
+        from the task and the computed value.
     """
     metadata: Dict[str, Any]
     f: Callable[[Task, Any], Any]
@@ -246,7 +263,8 @@ class MemoryMetadataStorage(Storage):
         return f"MemoryMetadataStorage"
     
     def lock(self, task) -> ContextManager[None]:
-        lock = Lock(task.storage_id)
+        task = [task] if not isinstance(task, List) else task
+        lock = _Lock([t.storage_id for t in task])
         self.locks.add(lock)
         return lock
     
@@ -256,12 +274,14 @@ class NoLock:
     
 class PickledDiskStorage(Storage):
     """
-        Local disk storage of task results (persistence) in the folder "base_folder" (defaults to '.cache').
+        Local disk storage of task results (persistence).
         This storage uses pickle to load/save the values to file.
 
-        A task result is saved in the file 'base_folder / task.group_name / str(task.storage_id) / "content.pkl"'
+        A task result is saved in the file 'base_folder / task.group_name / task.storage_id / "content.pkl"'
         In order to avoid problems when the process is interupted in the middle of a write, the task is first stored at 'base_folder / task.group_name / task.storage_id / "temp_content.pkl"'
         and then moved to 'base_folder / task.group_name / task.storage_id / "content.pkl"'
+
+        Task results are never implicitly removed.
     """
 
     def __init__(self, base_folder=".cache"):
@@ -302,9 +322,8 @@ class PickledDiskStorage(Storage):
 
 class ReadableDiskWriter(Storage):
     """
-        Default implementation of a human readable storage. 
-        However, it is very hard to design a practical readable storage such that load(dump(val)) = val,
-        therefore, we do not implement load and this storage is designed to write only.
+        Default implementation of a human readable storage.
+        Details are not yet settled.
     """
 
     def __init__(self, base_folder=".readablecache"):
