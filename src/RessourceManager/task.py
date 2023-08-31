@@ -153,13 +153,18 @@ class Task:
     def get_history(self) -> pd.DataFrame: raise NotImplementedError
     def get_stats(self) -> pd.DataFrame: raise NotImplementedError
 
-    def _compute(self) -> NoReturn: 
+    def run(self) -> NoReturn: 
+        """
+            If not already stored in one of the readers, 
+            lauches computation by first retrieving the arguments, calling f, and then stores in all writers.
+            
+            It is up to the caller (usually an engine) to ensure (if desired) 
+            that the dependencies are already computed on a storage and locking those results
+        """
         def get_param_values(v, o: TaskParamOptions):
             (l, reconstruct) = o.embedded_task_retriever(v)
-            match o.pass_as, o.exception:
-                case "value", "propagate":
-                    return reconstruct([t.result(exception="raise") for t in l])
-                case "value", "return":
+            match o.pass_as:
+                case "value":
                     return reconstruct([t.result(exception="return") for t in l])
                 case "task", "computed":
                     pass
@@ -174,11 +179,5 @@ class Task:
 
 class TaskManager:
     def __init__(self): raise NotImplementedError
-    def declare(self, task: Task): raise NotImplementedError
+    def declare(self, task: Task) -> Task: raise NotImplementedError
     def invalidate(self, tasks: Task | List[Task]): raise NotImplementedError
-    def get_dependency_graph(self, groups_only=False) -> Any: raise NotImplementedError
-    def set_computation_engine(self, e: TaskComputationEngine): pass
-
-class TaskComputationEngine:
-    def write_on_storage(self, tasks: Task | List[Task], s: Storage, progress = tqdm.tqdm): raise NotImplementedError
-    def result(self, tasks: Task | List[Task], exception: (Literal["raise", "return"] | List[Exception]) = "raise", progress=tqdm.tqdm) -> Any | List[Any]: raise NotImplementedError
