@@ -7,7 +7,7 @@ from RessourceManager.id_makers import unique_id, make_result_id
 from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, return_storage, NoReturn
 import inspect, pathlib, traceback, datetime, threading, multiprocessing, graphviz
 from RessourceManager.task_manager import TaskManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass
 class TaskGroup:
@@ -95,10 +95,35 @@ class StorageOptions:
     readers: List[Storage] = [memory_storage, pickled_disk_storage]
 
 @dataclass
+class HistoryEntry:
+    action: Literal["computing_identifier", "computing_storage_id", "computing", "dumping", "loading", "retrieving_params"]
+    qualifier: Optional[Literal["start", "end"]]
+    info: Optional[Any] = None #usually what storage is used in dumping, loading ; what thread, process is used for computing, ... ; what param is retrieved
+    result_info: Any = None
+    comment: Optional[str] = None
+    date: datetime.datetime = field(default_factory=datetime.now)
+
+    @staticmethod
+    def decorate(result_info_computer: Callable[[Any], Any], action = None, info = None,  comment=None):
+        def decorator(f):
+            def impl(self, *args, **kwargs):
+                self.list_history.append(HistoryEntry(f.__name__,  "start", info, None, comment))
+                try:
+                    r = f(self, *args, **kwargs)
+                    self.list_history.append(HistoryEntry(f.__name__,  "end", info, result_info_computer(r), comment))
+                    return r
+                except Exception as e:
+                    self.list_history.append(HistoryEntry(f.__name__,  "end", info, e, comment))
+                    raise e
+            return impl
+        return decorator
+                
+
+@dataclass
 class Task:
     param_dict: Dict[str, Tuple[Any, TaskParamOptions]]
     log: logging.Logger
-    history: pd.DataFrame = pd.DataFrame(columns=["date", "action", "result", "comment"])
+    list_history: List[HistoryEntry]
     storage_opt: StorageOptions
     group: TaskGroup
     f: Callable[..., Any]
@@ -112,6 +137,7 @@ class Task:
         return {k:o.embedded_task_retriever(v)[0] for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
 
     @functools.cached_property
+    @HistoryEntry.decorate(lambda x:x)
     def identifier(self): 
         def get_param_id(v, o: TaskParamOptions):
             (l, reconstruct) = o.embedded_task_retriever(v)
@@ -121,6 +147,7 @@ class Task:
         return make_result_id(self.group.name, params_id, False)
     
     @functools.cached_property
+    @HistoryEntry.decorate(lambda x:x)
     def storage_id(self):
         def get_param_id(v, o: TaskParamOptions):
             (l, reconstruct) = o.embedded_task_retriever(v)
@@ -135,7 +162,10 @@ class Task:
         params_id = {k:get_param_id(v, o) for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
         return make_result_id(self.group.name, params_id, True)
 
+
+
     @functools.cached_property
+    @HistoryEntry.decorate(lambda x:x)
     def short_name(self): 
         self.identifier[0:50] + ('...)' if len(self.identifier) > 49 else '')
     
@@ -177,7 +207,3 @@ class Task:
             return unique_id(reconstruct([task.storage_id if o.dependency == "graph" else task.result() for task in l]))
 
 
-class TaskManager:
-    def __init__(self): raise NotImplementedError
-    def declare(self, task: Task) -> Task: raise NotImplementedError
-    def invalidate(self, tasks: Task | List[Task]): raise NotImplementedError
