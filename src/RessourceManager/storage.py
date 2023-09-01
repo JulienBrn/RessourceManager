@@ -382,14 +382,14 @@ class JsonLocalFileKeyStorage(LockImplStorage):
     class Remove: pass
     filename: str | pathlib.Path
     base_folder: pathlib.Path
-    key: Any
+    keys: Any
     f: Callable[[Task, Any], Any]
 
-    def __init__(self, filename: str, key: Any, f: Callable[[Task, Any], Any] = lambda task, val: val, base_folder = ".cache"):
+    def __init__(self, filename: str, key: int | str | List[int | str], f: Callable[[Task, Any], Any] = lambda task, val: val, base_folder = ".cache"):
         super().__init__()
         self.filename = filename
         self.base_folder = base_folder
-        self.key = key
+        self.keys = key if isinstance(key, list) else [key]
         self.f = f
         if pathlib.Path(filename).suffix !="json":
             logger.warning("Expecting json file...")
@@ -402,7 +402,16 @@ class JsonLocalFileKeyStorage(LockImplStorage):
     
     def has(self, task: Task) -> bool:
         import json
-        return self.get_file_location(task).exists() and self.key in json.load(self.get_file_location(task).open("r"))
+        if self.get_file_location(task).exists():
+            d = json.load(self.get_file_location(task).open("r"))
+            for key in self.keys:
+                try:
+                    d = d[key]
+                except Exception:
+                    return False
+            return True
+        else:
+            return False
     
     def load(self, task: Task) -> Any:
         import json
@@ -416,11 +425,15 @@ class JsonLocalFileKeyStorage(LockImplStorage):
             d={}
         temp_path = self.get_file_location(task).with_stem("temp"+self.get_file_location(task).stem).with_suffix(".temp")
         temp_path.parent.mkdir(exist_ok=True, parents=True)
+        dtmp = d
+        for key in self.keys:
+            if not key in dtmp:
+                dtmp[key] = {}
+            dtmp = dtmp[key]
         if not isinstance(val, JsonLocalFileKeyStorage.Remove):
-            d[self.key] = self.f(task, val)
+            dtmp = val
         else:
-            if self.key in d:
-                del d[self.key]
+            del dtmp
         json.dump(d, temp_path.open("w"), indent=4)
         if temp_path.exists():
             shutil.move(str(temp_path), str(self.get_file_location(task)))
@@ -487,6 +500,14 @@ def shape_type_metadata(t: Task, val: Any):
         "val": str(val)[0:50]
     }
 
+def task_info_metadata(t: Task, val: Any):
+    return {
+        "identifier": t.identifier,
+        "storage_id": t.storage_id,
+        "params": t.param_dict,
+        "func": t.f
+    }
+
 class MemoryMetadataStorage(DictMemoryStorage): 
     """
         Similar to MemoryStorage without the parameters to handle when memory is freed but with a parameter to specify what metadata is stored 
@@ -510,5 +531,6 @@ class MemoryMetadataStorage(DictMemoryStorage):
 
 
 memory_metadata_storage = MemoryMetadataStorage()
-json_result_metadata_storage = JsonLocalFileKeyStorage("metadata.json", "result", shape_type_metadata)
+result_metadata_storage = JsonLocalFileKeyStorage("metadata.json", "result", shape_type_metadata)
+task_info_metadata_storage = JsonLocalFileKeyStorage("metadata.json", "info", task_info_metadata)
 
