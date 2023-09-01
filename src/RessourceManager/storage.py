@@ -152,6 +152,10 @@ class Storage:
 
 
 class LockImplStorage(Storage):
+    """
+        Abstract storage class giving a good default implementation of lock and is_locked 
+        by having a lock counter.
+    """
     class _Lock:
         def __init__(self, tasks: List[str], storage, callback):
             self.tasks = tasks
@@ -182,6 +186,13 @@ class LockImplStorage(Storage):
         return lock
     
 class DictMemoryStorage(LockImplStorage):
+    """
+        Basic in Memory Storage using a dictionary. There is no automatic freeing of memory done.
+
+        Memory storage of task results (memoization).
+        The technique used by this storage is simply a dictionary with keys task.storage_id.
+    """
+
     values: Dict[str, Any]
 
     def __init__(self, callback= lambda x:None):
@@ -296,7 +307,11 @@ class AbstractLocalDiskStorage(LockImplStorage):
 
 
 class ReturnStorage(DictMemoryStorage):
-
+    """
+        Class is used to store temporary results of return values in memory. 
+        Only results that are locked are kept, otherwise results are removed.
+        Its main purpose is to be used by engines.
+    """
     def __init__(self):
         super().__init__(callback = lambda id: self.values.pop(id))
 
@@ -311,10 +326,7 @@ class ReturnStorage(DictMemoryStorage):
 
 class MemoryStorage(DictMemoryStorage): 
     """
-        Memory storage of task results (memoization).
-        The technique used by this storage is simply a dictionary with keys task.storage_id.
-
-        The main parameters are about when to free up the memory.
+        Implementation of DictMemoryStorage that automatically frees up memory.
     """
     timer: Optional[threading.Timer]
     check_before_dump: bool
@@ -379,6 +391,10 @@ class PickledDiskStorage(AbstractLocalDiskStorage):
         return f"PickledDiskStorage({self.base_folder})"
     
 class JsonLocalFileKeyStorage(LockImplStorage): 
+    """
+        Stores information about a result in a json file key.
+    """
+
     class Remove: pass
     filename: str | pathlib.Path
     base_folder: pathlib.Path
