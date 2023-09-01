@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict
 import pandas as pd, tqdm, numpy as np
-import logging, hashlib, functools
+import logging, hashlib, functools, contextlib
 from RessourceManager.lifting import EmbeddedTaskHandler
 from RessourceManager.id_makers import unique_id, make_result_id
 from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, return_storage, NoReturn
@@ -46,7 +46,7 @@ class TaskParamOptions:
         Note that input parameters should have __repr__ defined
     """
     dependency: Literal["ignore", "value", "graph"]
-    pass_as: Literal["value"] | Tuple[Literal["task"], Literal["computed", "nocompute"]] | Tuple[Literal["location"], Storage | List[Storage]] = "value"
+    pass_as: Literal["value"] | Tuple[Literal["task"], List[Storage]] | Tuple[Literal["location"], List[Storage]] = "value"
     exception: Literal["propagate", "exception_as_arg"] = "propagate"
     embedded_task_retriever: Callable[[Any], Tuple[List[Task], Callable[[List[Any]], Any]]] = \
         lambda obj: ([], lambda l:obj) if not isinstance(obj, Task) else ([obj], lambda l:l[0])
@@ -91,36 +91,41 @@ class StorageOptions:
         Describes where a task should be attempted to be read and where a task should be attempted to be written.
         If a task can be both read and written from a same storage, we call that storage a checkpoint.
     """
-    writers: List[Storage]  = [memory_storage, pickled_disk_storage]
-    readers: List[Storage] = [memory_storage, pickled_disk_storage]
+    checkpoints: List[Storage]  = [memory_storage, pickled_disk_storage]
+    additional: List[Storage] = [memory_storage, pickled_disk_storage]
 
 @dataclass
 class HistoryEntry:
-    action: Literal["computing_identifier", "computing_storage_id", "computing", "dumping", "loading", "retrieving_params"]
+    action: Literal["computing_identifier", "computing_storage_id", "computing_short_name", "calling_f", "running", "dumping", "loading", "retrieving_params"]
     qualifier: Optional[Literal["start", "end"]]
     info: Optional[Any] = None #usually what storage is used in dumping, loading ; what thread, process is used for computing, ... ; what param is retrieved
     result_info: Any = None
     comment: Optional[str] = None
     date: datetime.datetime = field(default_factory=datetime.now)
 
-    @staticmethod
-    def decorate(result_info_computer: Callable[[Any], Any], action = None, info = None,  comment=None):
-        def decorator(f):
-            def impl(self, *args, **kwargs):
-                self.list_history.append(HistoryEntry(f.__name__,  "start", info, None, comment))
-                try:
-                    r = f(self, *args, **kwargs)
-                    self.list_history.append(HistoryEntry(f.__name__,  "end", info, result_info_computer(r), comment))
-                    return r
-                except Exception as e:
-                    self.list_history.append(HistoryEntry(f.__name__,  "end", info, e, comment))
-                    raise e
-            return impl
-        return decorator
-                
+    
+def historize(action = None, info = lambda *args, **kwargs: None, result_info_computer: Callable[[Any], Any] = lambda x:None,  comment=None):
+    def decorator(f):
+        if action is None:
+            action = f.__name__
+        def impl(self, *args, **kwargs):
+            if info is None:
+                info = (args, kwargs)
+            self.list_history.append(HistoryEntry(action,  "start", info, None, comment))
+            try:
+                r = f(self, *args, **kwargs)
+                self.list_history.append(HistoryEntry(action,  "end", info, result_info_computer(r), comment))
+                return r
+            except Exception as e:
+                self.list_history.append(HistoryEntry(action,  "end", info, e, comment))
+                raise e
+        return impl
+    return decorator                
 
 @dataclass
 class Task:
+    class LoadingRessourceError(Exception):pass
+
     param_dict: Dict[str, Tuple[Any, TaskParamOptions]]
     log: logging.Logger
     list_history: List[HistoryEntry]
@@ -137,7 +142,7 @@ class Task:
         return {k:o.embedded_task_retriever(v)[0] for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
 
     @functools.cached_property
-    @HistoryEntry.decorate(lambda x:x)
+    @historize("computing_identifier")
     def identifier(self): 
         def get_param_id(v, o: TaskParamOptions):
             (l, reconstruct) = o.embedded_task_retriever(v)
@@ -147,7 +152,7 @@ class Task:
         return make_result_id(self.group.name, params_id, False)
     
     @functools.cached_property
-    @HistoryEntry.decorate(lambda x:x)
+    @historize("computing_storage_id")
     def storage_id(self):
         def get_param_id(v, o: TaskParamOptions):
             (l, reconstruct) = o.embedded_task_retriever(v)
@@ -165,7 +170,7 @@ class Task:
 
 
     @functools.cached_property
-    @HistoryEntry.decorate(lambda x:x)
+    @historize("computing_short_name")
     def short_name(self): 
         self.identifier[0:50] + ('...)' if len(self.identifier) > 49 else '')
     
@@ -183,6 +188,60 @@ class Task:
     def get_history(self) -> pd.DataFrame: raise NotImplementedError
     def get_stats(self) -> pd.DataFrame: raise NotImplementedError
 
+
+
+    @historize("get_param")
+    def get_param(self, key, context_stack: Optional[contextlib.ExitStack] = None):
+        v, o = self.param_dict[key]
+        (l, reconstruct) = o.embedded_task_retriever(v)
+        match o.pass_as:
+            case "value":
+                return reconstruct([t.result(exception="return") for t in l])
+            case ("task", storages) | ("location", storages):
+                if not context_stack is None:
+                    for t in l:
+                        for storage in storages:
+                            context_stack.enter_context(storage.lock(t)) #To ensure the parameter does not disappear from the location....
+
+                for t in l:
+                    for storage in storages:
+                        if not storage.has(t):
+                            t.write_on_storage(storage)
+                    
+                if o.pass_as[0] == "task":
+                    return v
+                else:
+                    return reconstruct([[storage.get_location(t) for storage in storages] for t in l])
+            case _: 
+                raise ValueError(f"Unknown pass_as option {o.pass_as}")
+            
+    @historize("loading")
+    def load_from(self, storage: Optional[Storage | List[Storage]]=None):
+        if storage is None:
+            storage = self.storage_opt.checkpoints
+        if isinstance(storage, list):
+            excpts = {}
+            for s in storage:
+                with s.lock(self):
+                    if s.has(self):
+                        try:
+                            return self.load_from(s)
+                        except Exception as e:
+                            excpts[storage] = e
+            if excpts == {}:
+                raise Task.LoadingRessourceError(f"Impossible to read ressource {self}: ressource is not stored on any read storages")
+            else:
+                raise ExceptionGroup(f"Impossible to read ressource {self}. Ressource was stored on {excpts.keys()}, but all storages had loading errors", list(excpts.values()))    
+        else:
+            if not storage.has(self):
+                raise Task.LoadingRessourceError(f"Impossible to read ressource {self}: ressource is not stored on any read storages")
+            try:
+                res = storage.load(self)
+                return res
+            except Exception as e:
+                raise Task.LoadingRessourceError(f"Impossible to read ressource {self} from storage {storage} where it is stored") from e
+       
+    @historize("running")
     def run(self) -> NoReturn: 
         """
             If not already stored in one of the readers, 
