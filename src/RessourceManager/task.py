@@ -1,10 +1,10 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict
+from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn
 import pandas as pd, tqdm, numpy as np
 import logging, hashlib, functools, contextlib
 from RessourceManager.lifting import EmbeddedTaskHandler
 from RessourceManager.id_makers import unique_id, make_result_id
-from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, return_storage, NoReturn
+from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, return_storage, exception_storage
 import inspect, pathlib, traceback, datetime, threading, multiprocessing, graphviz
 from RessourceManager.task_manager import TaskManager
 from dataclasses import dataclass, field
@@ -79,7 +79,7 @@ class ComputeOptions:
 
         Other attributes should be auto-descriptive
     """
-    result_location: Storage = return_storage
+    result_storage: Storage = return_storage
     progress: bool
     n_retries: int = 1
     constraints: ComputationConstraints
@@ -104,7 +104,7 @@ class HistoryEntry:
     date: datetime.datetime = field(default_factory=datetime.now)
 
     
-def historize(action = None, info = lambda *args, **kwargs: None, result_info_computer: Callable[[Any], Any] = lambda x:None,  comment=None):
+def historize(action = None, info = None, result_info_computer: Callable[[Any], Any] = lambda x:None,  comment=None):
     def decorator(f):
         if action is None:
             action = f.__name__
@@ -124,13 +124,16 @@ def historize(action = None, info = lambda *args, **kwargs: None, result_info_co
 
 @dataclass
 class Task:
-    class LoadingRessourceError(Exception):pass
+    class LoadingTaskError(Exception): pass
+    class InputTaskError(Exception): pass
+    class DumpingTaskError(Exception): pass
+    class MissingResultError(Exception): pass
 
     param_dict: Dict[str, Tuple[Any, TaskParamOptions]]
     log: logging.Logger
     list_history: List[HistoryEntry]
     storage_opt: StorageOptions
-    group: TaskGroup
+    func_id: str
     f: Callable[..., Any]
     compute_options: ComputeOptions
     used_by: List[Task] = []
@@ -191,32 +194,51 @@ class Task:
 
 
     @historize("get_param")
-    def get_param(self, key, context_stack: Optional[contextlib.ExitStack] = None):
+    def get_param(self, key, context_stack: Optional[contextlib.ExitStack]):
         v, o = self.param_dict[key]
         (l, reconstruct) = o.embedded_task_retriever(v)
+        excpt = []
         match o.pass_as:
             case "value":
-                return reconstruct([t.result(exception="return") for t in l])
+                param_value = [t.result(exception="return") for t in l]
+                for v in param_value:
+                    if isinstance(v, Exception):
+                        excpt.append(v)
             case ("task", storages) | ("location", storages):
                 if not context_stack is None:
                     for t in l:
                         for storage in storages:
                             context_stack.enter_context(storage.lock(t)) #To ensure the parameter does not disappear from the location....
-
                 for t in l:
                     for storage in storages:
                         if not storage.has(t):
-                            t.write_on_storage(storage)
-                    
-                if o.pass_as[0] == "task":
-                    return v
-                else:
-                    return reconstruct([[storage.get_location(t) for storage in storages] for t in l])
+                            t.write_on_storage(storage)   
+                    x = t.load(return_storage) if return_storage.has(t) else t.load(exception_storage)
+                    if isinstance(x, Exception):
+                        excpt.append(x)     
             case _: 
                 raise ValueError(f"Unknown pass_as option {o.pass_as}")
+        match o.exception:
+            case "propagate":   
+                if not excpt ==[]:
+                    if len(l) == 1:
+                        raise excpt[0]
+                    else:
+                        raise ExceptionGroup("Errors in deconstructed tasks of parameter", excpt)
+            case "exception_as_arg": pass
+            case _:
+                raise ValueError(f"Unknown exception option {o.exception}")
+            
+        match o.pass_as:
+            case "value":
+                return reconstruct(param_value)
+            case "task", _:
+                return v
+            case "location", storages:
+                return reconstruct([[storage.get_location(t) for storage in storages] for t in l])
             
     @historize("loading")
-    def load_from(self, storage: Optional[Storage | List[Storage]]=None):
+    def load(self, storage: Optional[Storage | List[Storage]]=None):
         if storage is None:
             storage = self.storage_opt.checkpoints
         if isinstance(storage, list):
@@ -225,22 +247,43 @@ class Task:
                 with s.lock(self):
                     if s.has(self):
                         try:
-                            return self.load_from(s)
+                            return self.load(s)
                         except Exception as e:
                             excpts[storage] = e
             if excpts == {}:
-                raise Task.LoadingRessourceError(f"Impossible to read ressource {self}: ressource is not stored on any read storages")
+                raise Task.LoadingTaskError(f"Impossible to load result for task {self}: task is not stored on any checkpoints")
             else:
-                raise ExceptionGroup(f"Impossible to read ressource {self}. Ressource was stored on {excpts.keys()}, but all storages had loading errors", list(excpts.values()))    
+                raise ExceptionGroup(f"Impossible to load result for task {self}. Task was stored on {excpts.keys()}, but all storages had loading errors", list(excpts.values()))    
         else:
-            if not storage.has(self):
-                raise Task.LoadingRessourceError(f"Impossible to read ressource {self}: ressource is not stored on any read storages")
             try:
                 res = storage.load(self)
                 return res
             except Exception as e:
-                raise Task.LoadingRessourceError(f"Impossible to read ressource {self} from storage {storage} where it is stored") from e
-       
+                raise Task.LoadingTaskError(f"Impossible to load result for task {self} from storage {storage} where it is stored") from e
+
+    @historize("computation_store")  
+    def store(self, storage=None):
+        if storage is None:
+            storage = self.storage_opt.checkpoints + self.storage_opt.additional
+        if isinstance(storage, list):
+            excpts = {}
+            for s in storage:
+                try:
+                    self.store(self, s)
+                except Exception as e:
+                    excpts[storage] = e
+            if not excpts == {}:
+                raise ExceptionGroup(f"Impossible to store task {self} to storages {excpts.keys()}", list(excpts.values()))
+        else:
+            try:
+                self.compute_options.result_storage.transfer(self, storage)
+            except Exception as e:
+                raise Task.DumpingTaskError(f"Impossible to store {self} to storage {storage}") from e
+
+    @historize("compute", info="None")
+    def compute(self, args):
+        self.f(**args)
+
     @historize("running")
     def run(self) -> NoReturn: 
         """
@@ -250,19 +293,42 @@ class Task:
             It is up to the caller (usually an engine) to ensure (if desired) 
             that the dependencies are already computed on a storage and locking those results
         """
-        def get_param_values(v, o: TaskParamOptions):
-            (l, reconstruct) = o.embedded_task_retriever(v)
-            match o.pass_as:
-                case "value":
-                    return reconstruct([t.result(exception="return") for t in l])
-                case "task", "computed":
-                    pass
-                case "task", "uncomputed":
-                    pass
-                case "location", locs:
-                    pass
-                case _: 
-                    raise ValueError(f"Unknown pass_as option {o.pass_as}")
-            return unique_id(reconstruct([task.storage_id if o.dependency == "graph" else task.result() for task in l]))
+        if self.is_stored(): 
+            return
+        else:
+            with contextlib.ExitStack() as context_stack:
+                args ={}
+                excpts = {}
+                for k in self.param_dict:
+                    try:
+                        val = self.get_param(k, context_stack)
+                        args[k] = val
+                    except Exception as e:
+                        try:
+                            raise Task.InputTaskError(f"Error while computing input {k} of {self}") from e
+                        except Exception as e2:
+                            excpts[k] = e2
+                if not excpts == {}:
+                    raise ExceptionGroup(f"Error while in inputs for task {self}. Errored arguments keys are {excpts.keys()}")
+                try:
+                    with self.compute_options.result_storage.lock(self):
+                        self.compute(**args)
+                        if not self.compute_options.result_storage.has(self):
+                            raise Task.MissingResultError(f"Result was for task {self} was expected on storage {self.compute_options.result_storage}")
+                        self.store()
+                except * Task.DumpingTaskError as excpts:
+                    for e in excpts.exceptions:
+                        self.log.exception("DumpingError", exc_info=e)
+                except * BaseException as e:
+                    args_str = ",".join([f"{k}:{v[:10]}" for k,v in args.items()])
+                    operation = f"{self.func_id}({args_str})"
+                    raise Task.ComputeTaskError(f"Error while computing task {self} (operation was {operation})") from e
 
+                
+                    
+
+
+
+
+        
 

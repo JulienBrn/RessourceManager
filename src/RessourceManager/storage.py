@@ -148,6 +148,9 @@ class Storage:
     
     def is_locked(self, task) -> bool:
         raise NotImplementedError
+    
+    def transfert(self, task: Task, other: Storage) -> NoReturn:
+        raise NotImplementedError
 
 
 
@@ -214,6 +217,10 @@ class DictMemoryStorage(LockImplStorage):
 
     def get_location(self, task: Task):
         return task.storage_id
+    
+    def transfert(self, task: Task, other: Storage) -> NoReturn:
+        val = self.load(task)
+        other.dump(val)
         
     def __repr__(self):
         return f"DictMemoryStorage"
