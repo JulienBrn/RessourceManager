@@ -1,14 +1,13 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn
 import pandas as pd, tqdm, numpy as np
-import logging, hashlib, functools, contextlib
+import logging, hashlib, functools, contextlib, concurrent, asyncio
 from RessourceManager.lifting import EmbeddedTaskHandler
 from RessourceManager.id_makers import unique_id, make_result_id
 from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, return_storage, exception_storage
 import inspect, pathlib, traceback, datetime, threading, multiprocessing, graphviz
 from RessourceManager.task_manager import TaskManager
 from dataclasses import dataclass, field
-
 @dataclass
 class TaskGroup:
     name: str
@@ -194,13 +193,13 @@ class Task:
 
 
     @historize("get_param")
-    def get_param(self, key, context_stack: Optional[contextlib.ExitStack]):
+    async def get_param(self, key, context_stack: Optional[contextlib.ExitStack], executor: concurrent.futures.Executor):
         v, o = self.param_dict[key]
         (l, reconstruct) = o.embedded_task_retriever(v)
         excpt = []
         match o.pass_as:
             case "value":
-                param_value = [t.result(exception="return") for t in l]
+                param_value = [await t.result(exception="return", executor = executor) for t in l]
                 for v in param_value:
                     if isinstance(v, Exception):
                         excpt.append(v)
@@ -281,11 +280,11 @@ class Task:
                 raise Task.DumpingTaskError(f"Impossible to store {self} to storage {storage}") from e
 
     @historize("compute", info="None")
-    def compute(self, args):
-        self.f(**args)
+    async def compute(self, args, executor: concurrent.futures.Executor):
+        return await asyncio.get_event_loop().run_in_executor(executor, functools.partial(self.f, **args))
 
     @historize("running")
-    def run(self) -> NoReturn: 
+    async def run(self) -> NoReturn: 
         """
             If not already stored in one of the readers, 
             lauches computation by first retrieving the arguments, calling f, and then stores in all writers.
@@ -301,7 +300,7 @@ class Task:
                 excpts = {}
                 for k in self.param_dict:
                     try:
-                        val = self.get_param(k, context_stack)
+                        val = await self.get_param(k, context_stack)
                         args[k] = val
                     except Exception as e:
                         try:
@@ -312,14 +311,14 @@ class Task:
                     raise ExceptionGroup(f"Error while in inputs for task {self}. Errored arguments keys are {excpts.keys()}")
                 try:
                     with self.compute_options.result_storage.lock(self):
-                        self.compute(**args)
+                        await self.compute(**args)
                         if not self.compute_options.result_storage.has(self):
                             raise Task.MissingResultError(f"Result was for task {self} was expected on storage {self.compute_options.result_storage}")
                         self.store()
                 except * Task.DumpingTaskError as excpts:
                     for e in excpts.exceptions:
                         self.log.exception("DumpingError", exc_info=e)
-                except * BaseException as e:
+                except * Exception as e:
                     args_str = ",".join([f"{k}:{v[:10]}" for k,v in args.items()])
                     operation = f"{self.func_id}({args_str})"
                     raise Task.ComputeTaskError(f"Error while computing task {self} (operation was {operation})") from e
