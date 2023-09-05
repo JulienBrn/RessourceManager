@@ -348,42 +348,49 @@ class Task:
                 return excpts, embedded_args
             excpts, embedded_args = await get_params()
 
-
-            if len(excpts) > 0:
-                result = format_exception_dict(Task.PropagatedException, "Propagated exception from input {}", excpts)
-            else:
-                new_params = {k:self.param_dict[k].reconstruct(d) for d in embedded_args for k in self.param_dict}
-                short_name = ...
-                async def compute(args):
-                    async with computation_asyncio_lock[self.storage_id]:
-                        if self.compute_options.result_storage.has(self):
-                            return
-                        
-                        @historize("Computing")
-                        @add_exception_note(f"During computation for task {short_name}")
-                        async def run_f():
-                            match self.compute_options.executor:
-                                case "async":
-                                    return await self.f(**new_params)
-                                    
-                                case "sync":
-                                    return self.f(**new_params)
-                                case "demanded":
-                                    return await asyncio.get_running_loop().run_in_executor(executor, functools.partial(self.f, **new_params))
-                                case "loop_default":
-                                    return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **new_params))
-                                case  custom_executor:
-                                    return await asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(self.f, **new_params))
-                        try:
-                            await run_f()
-                        except Exception as e:
+            with self.compute_options.result_storage.lock(self):
+                if len(excpts) > 0:
+                    result = format_exception_dict(Task.PropagatedException, "Propagated exception from input {}", excpts)
+                else:
+                    new_params = {k:self.param_dict[k].reconstruct(d) for d in embedded_args for k in self.param_dict}
+                    short_name = ...
+                    async def compute():
+                        async with computation_asyncio_lock[self.storage_id]:
+                            if self.compute_options.result_storage.has(self):
+                                return
+                            
+                            @historize("Computing")
+                            @add_exception_note(f"During computation for task {short_name}")
+                            async def run_f():
+                                match self.compute_options.executor:
+                                    case "async":
+                                        return await self.f(**new_params) 
+                                    case "sync":
+                                        return self.f(**new_params)
+                                    case "demanded":
+                                        return await asyncio.get_running_loop().run_in_executor(executor, functools.partial(self.f, **new_params))
+                                    case "loop_default":
+                                        return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **new_params))
+                                    case  custom_executor:
+                                        return await asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(self.f, **new_params))
                             try:
-                                raise Task.ComputationException(f"Error in computation of {short_name}") from e
-                            except Task.ComputationException as err:
-                                result = err
-                        if not self.compute_options.result_storage.has(self):
-                            raise Task.MissingResultError(f"Expected storage {self.compute_options.result_storage} to have result for task {self.short_name} with storage_id {self.storage_id} but storage does not have it...")
-                
+                                result = await run_f()
+                            except Exception as e:
+                                try:
+                                    raise Task.ComputationException(f"Error in computation of {short_name}") from e
+                                except Task.ComputationException as err:
+                                    result = err
+                            return result
+                    
+                    result = await compute()
+                if not result is None:
+                    self.compute_options.result_storage.dump(self, result)
+                if not self.compute_options.result_storage.has(self):
+                    raise Task.MissingResultError(f"Expected storage {self.compute_options.result_storage} to have result for task {self.short_name} with storage_id {self.storage_id} but storage does not have it...")
+                    
+                #Write to storages....
+
+
                 # if len(excpts) == 1:
                 #     (k, d) = excpts.popitem()
                 #     if len(d) == 1:
