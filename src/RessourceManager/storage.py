@@ -219,7 +219,7 @@ class DictMemoryStorage(LockImplStorage):
         return task.storage_id
     
     async def transfert(self, task: Task, other: Storage) -> None:
-        print(f"transfert called with storage {self} to storage {other}")
+        # print(f"transfert called with storage {self} to storage {other}")
         val = self.load(task)
         other.dump(task, val)
         
@@ -394,12 +394,12 @@ class PickledDiskStorage(AbstractLocalDiskStorage):
         return pickle.load(path.open("rb"))
 
     def dump_content(self, path: pathlib.Path, val) -> str: 
-        print(f"dump called with storage {self} path = {path.absolute()} val={val}")
+        # print(f"dump called with storage {self} path = {path.absolute()} val={val}")
         from tblib import pickling_support
         pickling_support.install()
         with path.open("wb") as f:
             pickle.dump(val, f)
-        print(f"dump done with storage {self} path = {path.absolute()}")
+        # print(f"dump done with storage {self} path = {path.absolute()}")
         return "pkl"
 
     def __repr__(self):

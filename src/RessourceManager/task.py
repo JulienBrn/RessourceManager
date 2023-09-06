@@ -127,7 +127,7 @@ def historize(action = None, info = None, result_info_computer: Callable[[Any], 
             except Exception as e:
                 self.list_history.append(HistoryEntry(action,  "end", info, e, comment))
                 raise e
-        print(f"adding history decoration for {f.__name__}. is coroutine: {inspect.iscoroutinefunction(f)}")
+        # print(f"adding history decoration for {f.__name__}. is coroutine: {inspect.iscoroutinefunction(f)}")
         return impl if not inspect.iscoroutinefunction(f) else impl_async
     return decorator                
 
@@ -176,7 +176,7 @@ def add_exception_note(note: str):
             except BaseException as e:
                 e.add_note(note)
                 raise e
-        print(f"adding note {note} decoration for {f.__name__}. is coroutine: {inspect.iscoroutinefunction(f)}")
+        # print(f"adding note {note} decoration for {f.__name__}. is coroutine: {inspect.iscoroutinefunction(f)}")
         return new_f if not inspect.iscoroutinefunction(f) else new_f_async 
     return decorator 
 
