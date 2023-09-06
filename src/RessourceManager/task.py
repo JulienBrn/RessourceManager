@@ -157,7 +157,7 @@ def add_exception_note(note: str):
     return decorator
 
 computation_asyncio_lock = {}
-
+default_executor = concurrent.futures.ThreadPool()
 @dataclass
 class Task:
     class TaskExceptionValue(Exception):pass
@@ -233,7 +233,29 @@ class Task:
 
 
 
-    async def result(self, exception: (Literal["raise", "return"] | List[Exception]) = "raise", progress=tqdm.tqdm): raise NotImplementedError
+    async def result(self, exception: (Literal["raise", "return"] | List[Exception]) = "raise", progress=tqdm.tqdm, executor = default_executor): 
+        for storage in self.storage_opt.checkpoints:
+            with storage.lock(self):
+                if storage.has(self):
+                    res = storage.load(self)
+                    if exception == "raise" and isinstance(res, Exception):
+                        raise res
+                    else:
+                        return res
+        with self.compute_options.result_storage.lock():
+            await self._run(executor=executor, progress=None)
+            res = self.compute_options.result_storage.load(self)
+            if exception == "raise" and isinstance(res, Exception):
+                raise res
+            else:
+                return res
+            
+    async def write_to_storage(self, storage, progress=tqdm.tqdm, executor = default_executor): 
+        if not storage.has(self):
+            with self.compute_options.result_storage.lock():
+                await self._run(executor=executor, progress=None)
+                self.compute_options.result_storage.transfert(self, storage)
+                
     def invalidate(self): raise NotImplementedError
     def add_downstream_task(self, tasks: Task | List[Task]): raise NotImplementedError
     def get_dependency_graph(self, which=Literal["upstream", "downstream", "both"]) -> graphviz.Digraph: raise NotImplementedError
@@ -242,96 +264,96 @@ class Task:
 
 
 
-    @historize("get_param")
-    async def get_param(self, key, context_stack: Optional[contextlib.ExitStack], executor: concurrent.futures.Executor):
-        v, o = self.param_dict[key]
-        (l, reconstruct) = o.embedded_task_retriever(v)
-        excpt = []
-        match o.pass_as:
-            case "value":
-                param_value = [await t.result(exception="return", executor = executor) for t in l]
-                for v in param_value:
-                    if isinstance(v, Exception):
-                        excpt.append(v)
-            case ("task", storages) | ("location", storages):
-                if not context_stack is None:
-                    for t in l:
-                        for storage in storages:
-                            context_stack.enter_context(storage.lock(t)) #To ensure the parameter does not disappear from the location....
-                for t in l:
-                    for storage in storages:
-                        if not storage.has(t):
-                            t.write_on_storage(storage)   
-                    x = t.load(return_storage) if return_storage.has(t) else t.load(exception_storage)
-                    if isinstance(x, Exception):
-                        excpt.append(x)     
-            case _: 
-                raise ValueError(f"Unknown pass_as option {o.pass_as}")
-        match o.exception:
-            case "propagate":   
-                if not excpt ==[]:
-                    if len(l) == 1:
-                        raise excpt[0]
-                    else:
-                        raise ExceptionGroup("Errors in deconstructed tasks of parameter", excpt)
-            case "exception_as_arg": pass
-            case _:
-                raise ValueError(f"Unknown exception option {o.exception}")
+    # @historize("get_param")
+    # async def get_param(self, key, context_stack: Optional[contextlib.ExitStack], executor: concurrent.futures.Executor):
+    #     v, o = self.param_dict[key]
+    #     (l, reconstruct) = o.embedded_task_retriever(v)
+    #     excpt = []
+    #     match o.pass_as:
+    #         case "value":
+    #             param_value = [await t.result(exception="return", executor = executor) for t in l]
+    #             for v in param_value:
+    #                 if isinstance(v, Exception):
+    #                     excpt.append(v)
+    #         case ("task", storages) | ("location", storages):
+    #             if not context_stack is None:
+    #                 for t in l:
+    #                     for storage in storages:
+    #                         context_stack.enter_context(storage.lock(t)) #To ensure the parameter does not disappear from the location....
+    #             for t in l:
+    #                 for storage in storages:
+    #                     if not storage.has(t):
+    #                         t.write_on_storage(storage)   
+    #                 x = t.load(return_storage) if return_storage.has(t) else t.load(exception_storage)
+    #                 if isinstance(x, Exception):
+    #                     excpt.append(x)     
+    #         case _: 
+    #             raise ValueError(f"Unknown pass_as option {o.pass_as}")
+    #     match o.exception:
+    #         case "propagate":   
+    #             if not excpt ==[]:
+    #                 if len(l) == 1:
+    #                     raise excpt[0]
+    #                 else:
+    #                     raise ExceptionGroup("Errors in deconstructed tasks of parameter", excpt)
+    #         case "exception_as_arg": pass
+    #         case _:
+    #             raise ValueError(f"Unknown exception option {o.exception}")
             
-        match o.pass_as:
-            case "value":
-                return reconstruct(param_value)
-            case "task", _:
-                return v
-            case "location", storages:
-                return reconstruct([[storage.get_location(t) for storage in storages] for t in l])
+    #     match o.pass_as:
+    #         case "value":
+    #             return reconstruct(param_value)
+    #         case "task", _:
+    #             return v
+    #         case "location", storages:
+    #             return reconstruct([[storage.get_location(t) for storage in storages] for t in l])
             
-    @historize("loading")
-    def load(self, storage: Optional[Storage | List[Storage]]=None):
-        if storage is None:
-            storage = self.storage_opt.checkpoints
-        if isinstance(storage, list):
-            excpts = {}
-            for s in storage:
-                with s.lock(self):
-                    if s.has(self):
-                        try:
-                            return self.load(s)
-                        except Exception as e:
-                            excpts[storage] = e
-            if excpts == {}:
-                raise Task.LoadingTaskError(f"Impossible to load result for task {self}: task is not stored on any checkpoints")
-            else:
-                raise ExceptionGroup(f"Impossible to load result for task {self}. Task was stored on {excpts.keys()}, but all storages had loading errors", list(excpts.values()))    
-        else:
-            try:
-                res = storage.load(self)
-                return res
-            except Exception as e:
-                raise Task.LoadingTaskError(f"Impossible to load result for task {self} from storage {storage} where it is stored") from e
+    # @historize("loading")
+    # def load(self, storage: Optional[Storage | List[Storage]]=None):
+    #     if storage is None:
+    #         storage = self.storage_opt.checkpoints
+    #     if isinstance(storage, list):
+    #         excpts = {}
+    #         for s in storage:
+    #             with s.lock(self):
+    #                 if s.has(self):
+    #                     try:
+    #                         return self.load(s)
+    #                     except Exception as e:
+    #                         excpts[storage] = e
+    #         if excpts == {}:
+    #             raise Task.LoadingTaskError(f"Impossible to load result for task {self}: task is not stored on any checkpoints")
+    #         else:
+    #             raise ExceptionGroup(f"Impossible to load result for task {self}. Task was stored on {excpts.keys()}, but all storages had loading errors", list(excpts.values()))    
+    #     else:
+    #         try:
+    #             res = storage.load(self)
+    #             return res
+    #         except Exception as e:
+    #             raise Task.LoadingTaskError(f"Impossible to load result for task {self} from storage {storage} where it is stored") from e
 
-    @historize("computation_store")  
-    def store(self, storage=None):
-        if storage is None:
-            storage = self.storage_opt.checkpoints + self.storage_opt.additional
-        if isinstance(storage, list):
-            excpts = {}
-            for s in storage:
-                try:
-                    self.store(self, s)
-                except Exception as e:
-                    excpts[storage] = e
-            if not excpts == {}:
-                raise ExceptionGroup(f"Impossible to store task {self} to storages {excpts.keys()}", list(excpts.values()))
-        else:
-            try:
-                self.compute_options.result_storage.transfer(self, storage)
-            except Exception as e:
-                raise Task.DumpingTaskError(f"Impossible to store {self} to storage {storage}") from e
+    # @historize("computation_store")  
+    # def store(self, storage=None):
+    #     if storage is None:
+    #         storage = self.storage_opt.checkpoints + self.storage_opt.additional
+    #     if isinstance(storage, list):
+    #         excpts = {}
+    #         for s in storage:
+    #             try:
+    #                 self.store(self, s)
+    #             except Exception as e:
+    #                 excpts[storage] = e
+    #         if not excpts == {}:
+    #             raise ExceptionGroup(f"Impossible to store task {self} to storages {excpts.keys()}", list(excpts.values()))
+    #     else:
+    #         try:
+    #             self.compute_options.result_storage.transfer(self, storage)
+    #         except Exception as e:
+    #             raise Task.DumpingTaskError(f"Impossible to store {self} to storage {storage}") from e
 
-    @historize("compute", info="None")
-    async def compute(self, args, executor: concurrent.futures.Executor):
-        return await asyncio.get_event_loop().run_in_executor(executor, functools.partial(self.f, **args))
+    # @historize("compute", info="None")
+    # async def compute(self, args, executor: concurrent.futures.Executor):
+    #     return await asyncio.get_event_loop().run_in_executor(executor, functools.partial(self.f, **args))
 
     @historize("fetch_param")
     async def _get_param(self, opt: TaskParamOptions, task, context_stack: contextlib.ExitStack, executor):
@@ -351,7 +373,7 @@ class Task:
                 return task
         
     @historize("running")
-    async def _run(self, executor, progress) -> NoReturn: 
+    async def _run(self, executor, progress) -> None: 
         """
             Runs the computation and stores it to the default storages. Should not be called 
             if already stored.
