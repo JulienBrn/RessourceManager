@@ -45,7 +45,7 @@ class TaskParamOptions:
         Note that input parameters should have __repr__ defined
     """
     dependency: Literal["ignore", "value", "graph"]
-    pass_as: Literal["value"] | Tuple[Literal["task"], List[Storage]] | Tuple[Literal["location"], List[Storage]] = "value"
+    pass_as: Literal["value"] | Tuple[Literal["task"], List[Storage]] | Tuple[Literal["location"], Storage] = "value"
     exception: Literal["propagate", "exception_as_arg"] = "propagate"
     embedded_task_retriever: Callable[[Any], Tuple[List[Task], Callable[[List[Any]], Any]]] = \
         lambda obj: ([], lambda l:obj) if not isinstance(obj, Task) else ([obj], lambda l:l[0])
@@ -145,7 +145,18 @@ def format_exception_dict(cls, format_string: str, excpts: Dict[str, BaseExcepti
     else:
         return None
     
+def add_exception_note(note: str):
+    def decorator(f):
+        def new_f(*args, **kwargs):
+            try:
+                return f(*args, **kwargs)
+            except BaseException as e:
+                e.add_note(note)
+                raise e
+        return new_f
+    return decorator
 
+computation_asyncio_lock = {}
 
 @dataclass
 class Task:
@@ -153,6 +164,7 @@ class Task:
     class PropagatedException(TaskExceptionValue): pass
     class ComputationException(TaskExceptionValue): pass
     class MissingResultError(Exception): pass
+    class NoneReturn: pass
     
     @dataclass
     class ParamInfo:
@@ -321,40 +333,55 @@ class Task:
     async def compute(self, args, executor: concurrent.futures.Executor):
         return await asyncio.get_event_loop().run_in_executor(executor, functools.partial(self.f, **args))
 
+    @historize("fetch_param")
+    async def _get_param(self, opt: TaskParamOptions, task, context_stack: contextlib.ExitStack, executor):
+        match opt.pass_as:
+            case "value":
+                return await task.result(exception="return", executor = executor)
+            case ("location", storage):
+                context_stack.enter_context(storage.lock(task))
+                if not storage.has(task):
+                    await task.write_to_storage(storage, executor = executor)
+                return storage.get_location(task)
+            case ("task", storages):
+                for storage in storages:
+                    context_stack.enter_context(storage.lock(task))
+                    if not storage.has(task):
+                        await task.write_to_storage(storage, executor = executor)
+                return task
+        
     @historize("running")
     async def _run(self, executor, progress) -> NoReturn: 
         """
             Runs the computation and stores it to the default storages. Should not be called 
             if already stored.
         """
-        with contextlib.ExitStack() as context_stack:
-            
-            @historize("Fetching parameters")
-            @add_exception_note(self, "During get_params for task {task_identifier}")
-            async def get_params():
-                async with TaskGroup() as tg:
-                    subtasks = {k : {t_name: tg.create_task(self._get_param(self.param_dict[k].options, t)) for t_name, t in self.param_dict[k].embedded_tasks.items()} for k in self.param_dict}
-                embedded_args = {k: {t_name: t.result() for t_name, t in embedded.items()} for k, embedded in subtasks.items()}
-                excpts = {}
-                i = 0
-                for i, k, t_name in enumerate([(k, t_name) for k in self.param_dict for t_name in self.param_dict[k].embedded_tasks.keys()]):
-                    if k not in embedded_args:
-                        embedded_args[k] ={}
-                    embedded_args[k][t_name] = new_params[i]
-                    if self.param_dict[k].options.exception=="propagate" and isinstance(new_params[i], Task.TaskExceptionValue):
-                        if k not in excpts:
-                            excpts[k] = {}
-                        excpts[k][t_name] = self.param_dict[k].options.exception
-                return excpts, embedded_args
-            excpts, embedded_args = await get_params()
+        with self.compute_options.result_storage.lock(self):
+            with contextlib.ExitStack() as param_context_stack:
+                @historize("Fetching parameters")
+                @add_exception_note(self, "During get_params for task {task_identifier}")
+                async def get_params():
+                    async with TaskGroup() as tg:
+                        subtasks = {k : {t_name: tg.create_task(add_exception_note(f"In fetching param {k}.{t_name}")(self._get_param)(self.param_dict[k].options, t, param_context_stack, executor)) for t_name, t in self.param_dict[k].embedded_tasks.items()} for k in self.param_dict}
+                    embedded_args = {k: {t_name: t.result() for t_name, t in embedded.items()} for k, embedded in subtasks.items()}
+                    excpts = {}
+                    i = 0
+                    for k, t_name in [(k, t_name) for k in embedded_args for t_name in embedded_args[k]]:
+                        if self.param_dict[k].options.exception=="propagate" and isinstance(embedded_args[k][t_name], Task.TaskExceptionValue):
+                            if k not in excpts:
+                                excpts[k] = {}
+                            excpts[k][t_name] = embedded_args[k][t_name]
+                    return excpts, embedded_args
+                excpts, embedded_args = await get_params()
 
-            with self.compute_options.result_storage.lock(self):
                 if len(excpts) > 0:
                     result = format_exception_dict(Task.PropagatedException, "Propagated exception from input {}", excpts)
                 else:
                     new_params = {k:self.param_dict[k].reconstruct(d) for d in embedded_args for k in self.param_dict}
                     short_name = ...
                     async def compute():
+                        if not self.storage_id in computation_asyncio_lock:
+                            computation_asyncio_lock[self.storage_id] = asyncio.Lock()
                         async with computation_asyncio_lock[self.storage_id]:
                             if self.compute_options.result_storage.has(self):
                                 return
@@ -383,60 +410,18 @@ class Task:
                             return result
                     
                     result = await compute()
-                if not result is None:
-                    self.compute_options.result_storage.dump(self, result)
-                if not self.compute_options.result_storage.has(self):
-                    raise Task.MissingResultError(f"Expected storage {self.compute_options.result_storage} to have result for task {self.short_name} with storage_id {self.storage_id} but storage does not have it...")
-                    
-                #Write to storages....
 
-
-                # if len(excpts) == 1:
-                #     (k, d) = excpts.popitem()
-                #     if len(d) == 1:
-                #         (t_name, e) = excpts.popitem()
-                #         raise Task.PropagatedException(f"Propagated exception from input {k}.{t_name}") from e
-                #     else:
-                #         try:
-                #             raise ExceptionGroup(f"Exceptions keys {d.keys()}", d.values())
-                #         except ExceptionGroup as e:
-                #             raise Task.PropagatedException(f"Propagated exception from input {k}") from e
-                # else:
-                #     raise ExceptionGroup(f"Exceptions in several ")
-                # result = 
-            
-            excpts = {}
-            tasks = {}
-            for k in self.param_dict:
-                tasks[k] = asyncio.create_task(self.get_param(k, context_stack))
-            
-                    # try:
-                    #      = await self.get_param(k, context_stack)
-                    #     args[k] = val
-                    # except Exception as e:
-                    #     try:
-                    #         raise Task.InputTaskError(f"Error while computing input {k} of {self}") from e
-                    #     except Exception as e2:
-                    #         excpts[k] = e2
-            if not excpts == {}:
-                raise ExceptionGroup(f"Error while in inputs for task {self}. Errored arguments keys are {excpts.keys()}")
-            try:
-                with self.compute_options.result_storage.lock(self):
-                    await self.compute(**args)
-                    if not self.compute_options.result_storage.has(self):
-                        raise Task.MissingResultError(f"Result was for task {self} was expected on storage {self.compute_options.result_storage}")
-                    self.store()
-            except * Task.DumpingTaskError as excpts:
-                for e in excpts.exceptions:
-                    self.log.exception("DumpingError", exc_info=e)
-            except * Exception as e:
-                args_str = ",".join([f"{k}:{v[:10]}" for k,v in args.items()])
-                operation = f"{self.func_id}({args_str})"
-                raise Task.ComputeTaskError(f"Error while computing task {self} (operation was {operation})") from e
-
+            if not result is None:
+                self.compute_options.result_storage.dump(self, result if not isinstance(result, Task.NoneReturn) else None)
+            if not self.compute_options.result_storage.has(self):
+                raise Task.MissingResultError(f"Expected storage {self.compute_options.result_storage} to have result for task {self.short_name} with storage_id {self.storage_id} but storage does not have it...")
                 
-                    
-
+            @historize("Autostore")
+            @add_exception_note(f"During storing of task {short_name}")
+            async def automatic_store():
+                async with TaskGroup() as tg:
+                    subtasks = {storage : tg.create_task(self.compute_options.result_storage.transfert(storage)) for storage in  self.storage_opt.additional + self.storage_opt.checkpoints}
+            await automatic_store()
 
 
 
