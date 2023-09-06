@@ -187,15 +187,36 @@ default_executor = concurrent.futures.ThreadPoolExecutor()
 class Updater(tqdm.tqdm):
     cancel_ev: Optional[threading.Event]
 
-    def __init__(self, *args, **kwargs):
-        self.cancel_ev = None
+    def __init__(self, *args, cancel_ev = None, **kwargs):
+        self.cancel_ev = cancel_ev
         super().__init__(*args, **kwargs)
+        self.cancel_ev = cancel_ev
+        # print(f"CANCELEV {self.cancel_ev} {cancel_ev}")
+        # input()
         
 
     def refresh(self, nolock=False, lock_args=None):
         super().refresh(nolock, lock_args)
         if not self.cancel_ev is None and self.cancel_ev.is_set():
             raise asyncio.CancelledError("CancelledError from outside executor")
+        # print(self.cancel_ev)
+
+    # def cancel(self):
+    #     if not self.cancel_ev is None:
+    #         self.cancel_ev.set()
+
+    # def __getstate__(self):
+    #     return self.cancel_ev
+    
+    # def __setstate__(self, c):
+    #     r = Updater()
+    #     self.cancel_ev = c
+    #     self.__dict__ = r.__dict__
+    
+
+def call_func_with_updater(f, *args, cancel_ev, **kwargs):
+    # print(f"callfunc {cancel_ev}")
+    f(*args, updater = Updater(cancel_ev = cancel_ev), **kwargs)
 
 @dataclass
 class Task:
@@ -480,25 +501,30 @@ class Task:
                             @add_exception_note(f"During computation for task {short_name}")
                             async def run_f(self: Task):
                                 mexecutor = self.compute_options.executor if not self.compute_options.executor == "demanded" else executor
-                                updater = Updater()
-                                mnew_params = dict(**new_params, updater=updater) if self.compute_options.progress else new_params
+                                # updater = Updater()
+                                # mnew_params = dict(**new_params, updater=updater) if self.compute_options.progress else new_params
                                 match mexecutor:
                                     case "async":
-                                        return await self.f(**mnew_params) 
+                                        return await self.f(**new_params) 
                                     case "sync":
-                                        return self.f(**mnew_params)
+                                        return self.f(**new_params)
                                     case "loop_default":
-                                        return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **mnew_params))
+                                        return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **new_params))
                                     case  custom_executor:
                                         with contextlib.ExitStack() as stack:
                                             if isinstance(custom_executor, concurrent.futures.ThreadPoolExecutor):
-                                                updater.cancel_ev = threading.Event()
+                                                cancel_ev = threading.Event()
                                             if isinstance(custom_executor, concurrent.futures.ProcessPoolExecutor):
                                                 from multiprocessing.managers import SyncManager
                                                 manager = SyncManager()
                                                 stack.enter_context(manager)
-                                                updater.cancel_ev = manager.Event()
-                                            return await asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(self.f, **mnew_params))
+                                                cancel_ev = manager.Event()
+                                            try :
+                                                return await asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(call_func_with_updater, self.f, **new_params, cancel_ev=cancel_ev))
+                                            except asyncio.CancelledError:
+                                                cancel_ev.set()
+                                                await asyncio.sleep(1)
+                                                raise
                             try:
                                 result = await run_f(self)
                             except Exception as e:
