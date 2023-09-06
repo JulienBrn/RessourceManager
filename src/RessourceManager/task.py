@@ -150,7 +150,7 @@ def format_exception_dict(cls, format_string: str, excpts: Dict[str, BaseExcepti
             else:
                 return r, nks
         else:
-            return ExceptionGroup("keys={[nks for k, (r, nks) in excpts.items()]}", [r for k, (r, nks) in excpts.items()]), excpts.keys()
+            return ExceptionGroup(f"keys={[k for k, (r, nks) in excpts.items()]}", [r for k, (r, nks) in excpts.items()]), excpts.keys()
         
     e, ks = format_exception_dict_impl(excpts)
     if not e is None:
@@ -181,7 +181,22 @@ def add_exception_note(note: str):
     return decorator 
 
 computation_asyncio_lock = {}
+
 default_executor = concurrent.futures.ThreadPoolExecutor()
+
+class Updater(tqdm.tqdm):
+    cancel_ev: Optional[threading.Event]
+
+    def __init__(self, *args, **kwargs):
+        self.cancel_ev = None
+        super().__init__(*args, **kwargs)
+        
+
+    def refresh(self, nolock=False, lock_args=None):
+        super().refresh(nolock, lock_args)
+        if not self.cancel_ev is None and self.cancel_ev.is_set():
+            raise asyncio.CancelledError("CancelledError from outside executor")
+
 @dataclass
 class Task:
     class TaskExceptionValue(Exception):pass
@@ -463,17 +478,27 @@ class Task:
                             
                             @historize("Computing")
                             @add_exception_note(f"During computation for task {short_name}")
-                            async def run_f(self):
+                            async def run_f(self: Task):
                                 mexecutor = self.compute_options.executor if not self.compute_options.executor == "demanded" else executor
+                                updater = Updater()
+                                mnew_params = dict(**new_params, updater=updater) if self.compute_options.progress else new_params
                                 match mexecutor:
                                     case "async":
-                                        return await self.f(**new_params) 
+                                        return await self.f(**mnew_params) 
                                     case "sync":
-                                        return self.f(**new_params)
+                                        return self.f(**mnew_params)
                                     case "loop_default":
-                                        return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **new_params))
+                                        return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **mnew_params))
                                     case  custom_executor:
-                                        return await asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(self.f, **new_params))
+                                        with contextlib.ExitStack() as stack:
+                                            if isinstance(custom_executor, concurrent.futures.ThreadPoolExecutor):
+                                                updater.cancel_ev = threading.Event()
+                                            if isinstance(custom_executor, concurrent.futures.ProcessPoolExecutor):
+                                                from multiprocessing.managers import SyncManager
+                                                manager = SyncManager()
+                                                stack.enter_context(manager)
+                                                updater.cancel_ev = manager.Event()
+                                            return await asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(self.f, **mnew_params))
                             try:
                                 result = await run_f(self)
                             except Exception as e:
@@ -491,7 +516,7 @@ class Task:
                 raise Task.MissingResultError(f"Expected storage {self.compute_options.result_storage} to have result for task {self.short_name} with storage_id {self.storage_id} but storage does not have it...")
                 
             @historize("Autostore")
-            @add_exception_note(f"During storing of task {short_name}")
+            @add_exception_note(f"During storing of task {self.short_name}")
             async def automatic_store(s):
                 async with asyncio.TaskGroup() as tg:
                     subtasks = {storage : tg.create_task(self.compute_options.result_storage.transfert(self, storage)) for storage in  self.storage_opt.additional + self.storage_opt.checkpoints}

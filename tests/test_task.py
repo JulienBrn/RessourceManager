@@ -5,19 +5,24 @@ from RessourceManager.storage import result_metadata_storage, readable_human_wri
 logger=logging.getLogger()
 beautifullogger.setup()
 
-def syracuse(n):
+def syracuse(n, updater: Updater):
+    # raise ValueError(0)
     tot = 17
+    updater.total = n
     for i in range(n):
         tot = tot//2 if tot % 2 ==0 else 3*tot+1
+        updater.update(1)
     return tot
 
 
-def f(a: pd.DataFrame, b: pd.DataFrame, n: int):
+def f(a: pd.DataFrame, b: pd.DataFrame, n: int, updater: Updater):
     # time.sleep(5)
-    return pd.concat([a+b+syracuse(n), a*b])
+    res = pd.concat([a+b+syracuse(n, updater), a*b])
+    print("f fnished")
+    return res
 
 init_df = pd.DataFrame([[i, 10*i] for i in range(3)], columns=["x", "y"])
-n =  11**6
+n =  11**7
 
 param_dict = dict(
     a= Task.ParamInfo(
@@ -37,7 +42,7 @@ t = Task(
     list_history=[], 
     storage_opt=StorageOptions(additional=[result_metadata_storage, readable_human_writer, task_info_metadata_storage]), 
     func_id = "f", 
-    compute_options=ComputeOptions(progress=False, alternative_paths=[]))
+    compute_options=ComputeOptions(progress=True, alternative_paths=[]))
 
 param_dict0 = dict(
     a= Task.ParamInfo(
@@ -57,7 +62,7 @@ t0 = Task(
     list_history=[], 
     storage_opt=StorageOptions(additional=[result_metadata_storage, readable_human_writer, task_info_metadata_storage]), 
     func_id = "f", 
-    compute_options=ComputeOptions(progress=False, alternative_paths=[]))
+    compute_options=ComputeOptions(progress=True, alternative_paths=[]))
 
 
 param_dict1 = dict(
@@ -79,7 +84,7 @@ t1 = Task(
     list_history=[], 
     storage_opt=StorageOptions(additional=[result_metadata_storage, readable_human_writer, task_info_metadata_storage]), 
     func_id = "f", 
-    compute_options=ComputeOptions(progress=False, alternative_paths=[]))
+    compute_options=ComputeOptions(progress=True, alternative_paths=[]))
 
 t.used_by.append(t1)
 t0.used_by.append(t1)
@@ -94,11 +99,21 @@ threadexecutor = concurrent.futures.ThreadPoolExecutor(3)
 
 async def main():
     await t.invalidate()
+    await t0.invalidate()
     print("t Invalidated")
     # hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     # print(hist_df)
-    input()
-    await t1.result(executor="sync", progress=None)
+    myexecutor = threadexecutor
+    try:
+        task = asyncio.get_running_loop().create_task(t1.result(executor=myexecutor, progress=None))
+        await asyncio.sleep(2)
+        # task.cancel()
+        await task
+    except asyncio.CancelledError:
+        print("CANCELLED")
+        task.cancel()
+        myexecutor.shutdown(wait=True, cancel_futures=False)
+        print("Shutdown")
     hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     print(hist_df)
     print(f"Duration: {hist_df['date'].max() - hist_df['date'].min()}")
