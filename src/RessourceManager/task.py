@@ -2,11 +2,11 @@ from __future__ import annotations
 from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn
 import pandas as pd, tqdm, numpy as np
 import logging, hashlib, functools, contextlib, concurrent, asyncio
-from RessourceManager.lifting import EmbeddedTaskHandler
+# from RessourceManager.lifting import EmbeddedTaskHandler
 from RessourceManager.id_makers import unique_id, make_result_id
-from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, return_storage, exception_storage
+from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, return_storage
 import inspect, pathlib, traceback, datetime, threading, multiprocessing, graphviz
-from RessourceManager.task_manager import TaskManager
+# from RessourceManager.task_manager import TaskManager
 from dataclasses import dataclass, field
 @dataclass
 class TaskGroup:
@@ -72,10 +72,10 @@ class ComputeOptions:
         Other attributes should be auto-descriptive
     """
     result_storage: Storage = return_storage
-    progress: bool
+    progress: bool = False
     n_retries: int = 1
-    executor = Literal["async", "sync", "demanded", "loop_default"] | concurrent.futures.Executor 
-    alternative_paths: List[Any] #Alternative computation paths dependant to what has already been computed
+    executor: Literal["async", "sync", "demanded", "loop_default"] | concurrent.futures.Executor = "demanded"
+    alternative_paths: List[Any] = ()#Alternative computation paths dependant to what has already been computed
     
 @dataclass 
 class StorageOptions:
@@ -83,8 +83,8 @@ class StorageOptions:
         Describes where a task should be attempted to be read and where a task should be attempted to be written.
         If a task can be both read and written from a same storage, we call that storage a checkpoint.
     """
-    checkpoints: List[Storage]  = [memory_storage, pickled_disk_storage]
-    additional: List[Storage] = [memory_storage, pickled_disk_storage]
+    checkpoints: List[Storage]  = field(default_factory=lambda: [memory_storage, pickled_disk_storage])
+    additional: List[Storage] = field(default_factory=lambda: [])
 
 @dataclass
 class HistoryEntry:
@@ -93,14 +93,17 @@ class HistoryEntry:
     info: Optional[Any] = None #usually what storage is used in dumping, loading ; what thread, process is used for computing, ... ; what param is retrieved
     result_info: Any = None
     comment: Optional[str] = None
-    date: datetime.datetime = field(default_factory=datetime.now)
+    date: datetime.datetime = field(default_factory=datetime.datetime.now)
 
     
-def historize(action = None, info = None, result_info_computer: Callable[[Any], Any] = lambda x:None,  comment=None):
+def historize(action = None, info = None, result_info_computer: Callable[[Any], Any] = lambda x: str(x)[0:50],  comment=None):
     def decorator(f):
+        nonlocal action, info
         if action is None:
             action = f.__name__
+        
         def impl(self, *args, **kwargs):
+            nonlocal action, info
             if info is None:
                 info = (args, kwargs)
             self.list_history.append(HistoryEntry(action,  "start", info, None, comment))
@@ -111,7 +114,21 @@ def historize(action = None, info = None, result_info_computer: Callable[[Any], 
             except Exception as e:
                 self.list_history.append(HistoryEntry(action,  "end", info, e, comment))
                 raise e
-        return impl
+            
+        async def impl_async(self, *args, **kwargs):
+            nonlocal action, info
+            if info is None:
+                info = (args, kwargs)
+            self.list_history.append(HistoryEntry(action,  "start", info, None, comment))
+            try:
+                r = await f(self, *args, **kwargs)
+                self.list_history.append(HistoryEntry(action,  "end", info, result_info_computer(r), comment))
+                return r
+            except Exception as e:
+                self.list_history.append(HistoryEntry(action,  "end", info, e, comment))
+                raise e
+        print(f"adding history decoration for {f.__name__}. is coroutine: {inspect.iscoroutinefunction(f)}")
+        return impl if not inspect.iscoroutinefunction(f) else impl_async
     return decorator                
 
 
@@ -153,11 +170,18 @@ def add_exception_note(note: str):
             except BaseException as e:
                 e.add_note(note)
                 raise e
-        return new_f
-    return decorator
+        async def new_f_async(*args, **kwargs):
+            try:
+                return await f(*args, **kwargs)
+            except BaseException as e:
+                e.add_note(note)
+                raise e
+        print(f"adding note {note} decoration for {f.__name__}. is coroutine: {inspect.iscoroutinefunction(f)}")
+        return new_f if not inspect.iscoroutinefunction(f) else new_f_async 
+    return decorator 
 
 computation_asyncio_lock = {}
-default_executor = concurrent.futures.ThreadPool()
+default_executor = concurrent.futures.ThreadPoolExecutor()
 @dataclass
 class Task:
     class TaskExceptionValue(Exception):pass
@@ -184,44 +208,52 @@ class Task:
     func_id: str
     f: Callable[..., Any]
     compute_options: ComputeOptions
-    used_by: List[Task] = []
+    used_by: List[Task] = field(default_factory=lambda:[])
     
     @functools.cached_property #For each parameter the list of tasks in it
     def task_dependencies(self) -> Dict[str, List[Task]]: 
         return {k:o.embedded_task_retriever(v)[0] for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
 
+
     @functools.cached_property
     @historize("computing_identifier")
     def identifier(self): 
-        def get_param_id(v, o: TaskParamOptions):
-            (l, reconstruct) = o.embedded_task_retriever(v)
-            return unique_id(reconstruct([task.identifier for task in l]))
+        identifier_dict = {k:param.reconstruct({t_name: t.identifier for t_name,t in param.embedded_tasks.items()}) for k, param in self.param_dict.items() if not param.options.dependency=="ignore"}
+        # def get_param_id(v, o: TaskParamOptions):
+        #     (l, reconstruct) = o.embedded_task_retriever(v)
+        #     return unique_id(reconstruct([task.identifier for task in l]))
 
-        params_id = {k:get_param_id(v, o) for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
-        return make_result_id(self.group.name, params_id, False)
+        # params_id = {k:get_param_id(v, o) for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
+        return make_result_id(self.func_id, identifier_dict, False)
     
     @functools.cached_property
     @historize("computing_storage_id")
     def storage_id(self):
-        def get_param_id(v, o: TaskParamOptions):
-            (l, reconstruct) = o.embedded_task_retriever(v)
-            match o.dependency:
-                case "graph":
-                    return unique_id(reconstruct([task.storage_id for task in l]))
-                case "value":
-                    return unique_id(reconstruct([task.result() for task in l]))
-                case _: 
-                    raise ValueError(f"Unknown dependency option {o.dependency}")
+        # def get_param_id(v, o: TaskParamOptions):
+        #     (l, reconstruct) = o.embedded_task_retriever(v)
+        #     match o.dependency:
+        #         case "graph":
+        #             return unique_id(reconstruct([task.storage_id for task in l]))
+        #         case "value":
+        #             return unique_id(reconstruct([task.result() for task in l]))
+        #         case _: 
+        #             raise ValueError(f"Unknown dependency option {o.dependency}")
                 
-        params_id = {k:get_param_id(v, o) for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
-        return make_result_id(self.group.name, params_id, True)
+        # params_id = {k:get_param_id(v, o) for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
+        storage_id_dict = {
+            k:param.reconstruct({
+                t_name: t.storage_id if param.options.dependency=="ignore" else t.result(exception="return") 
+                    for t_name,t in param.embedded_tasks.items()
+            }) for k, param in self.param_dict.items() if not param.options.dependency=="ignore"}
+        
+        return make_result_id(self.func_id, storage_id_dict, True)
 
 
 
     @functools.cached_property
     @historize("computing_short_name")
     def short_name(self): 
-        self.identifier[0:50] + ('...)' if len(self.identifier) > 49 else '')
+        return self.identifier[0:50] + ('...)' if len(self.identifier) > 49 else '')
     
     def __repr__(self):
         return self.identifier
@@ -242,7 +274,7 @@ class Task:
                         raise res
                     else:
                         return res
-        with self.compute_options.result_storage.lock():
+        with self.compute_options.result_storage.lock(self):
             await self._run(executor=executor, progress=None)
             res = self.compute_options.result_storage.load(self)
             if exception == "raise" and isinstance(res, Exception):
@@ -259,7 +291,14 @@ class Task:
     def invalidate(self): raise NotImplementedError
     def add_downstream_task(self, tasks: Task | List[Task]): raise NotImplementedError
     def get_dependency_graph(self, which=Literal["upstream", "downstream", "both"]) -> graphviz.Digraph: raise NotImplementedError
-    def get_history(self) -> pd.DataFrame: raise NotImplementedError
+    def get_history(self) -> pd.DataFrame: 
+        df = pd.DataFrame()
+        df["date"] = [x.date for x in self.list_history]
+        df["qualifier"] = [x.qualifier for x in self.list_history]
+        df["action"] = [x.action for x in self.list_history]
+        df["info"] = [x.info for x in self.list_history]
+        df["result"] = [x.result_info for x in self.list_history]
+        return df
     def get_stats(self) -> pd.DataFrame: raise NotImplementedError
 
 
@@ -381,9 +420,9 @@ class Task:
         with self.compute_options.result_storage.lock(self):
             with contextlib.ExitStack() as param_context_stack:
                 @historize("Fetching parameters")
-                @add_exception_note(self, "During get_params for task {task_identifier}")
-                async def get_params():
-                    async with TaskGroup() as tg:
+                @add_exception_note(f"During get_params for task {self.short_name}")
+                async def get_params(self):
+                    async with asyncio.TaskGroup() as tg:
                         subtasks = {k : {t_name: tg.create_task(add_exception_note(f"In fetching param {k}.{t_name}")(self._get_param)(self.param_dict[k].options, t, param_context_stack, executor)) for t_name, t in self.param_dict[k].embedded_tasks.items()} for k in self.param_dict}
                     embedded_args = {k: {t_name: t.result() for t_name, t in embedded.items()} for k, embedded in subtasks.items()}
                     excpts = {}
@@ -394,12 +433,12 @@ class Task:
                                 excpts[k] = {}
                             excpts[k][t_name] = embedded_args[k][t_name]
                     return excpts, embedded_args
-                excpts, embedded_args = await get_params()
+                excpts, embedded_args = await get_params(self)
 
                 if len(excpts) > 0:
                     result = format_exception_dict(Task.PropagatedException, "Propagated exception from input {}", excpts)
                 else:
-                    new_params = {k:self.param_dict[k].reconstruct(d) for d in embedded_args for k in self.param_dict}
+                    new_params = {k:self.param_dict[k].reconstruct(d) for k,d in embedded_args.items()}
                     short_name = ...
                     async def compute():
                         if not self.storage_id in computation_asyncio_lock:
@@ -410,20 +449,19 @@ class Task:
                             
                             @historize("Computing")
                             @add_exception_note(f"During computation for task {short_name}")
-                            async def run_f():
-                                match self.compute_options.executor:
+                            async def run_f(self):
+                                mexecutor = self.compute_options.executor if not self.compute_options.executor == "demanded" else executor
+                                match mexecutor:
                                     case "async":
                                         return await self.f(**new_params) 
                                     case "sync":
                                         return self.f(**new_params)
-                                    case "demanded":
-                                        return await asyncio.get_running_loop().run_in_executor(executor, functools.partial(self.f, **new_params))
                                     case "loop_default":
                                         return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **new_params))
                                     case  custom_executor:
                                         return await asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(self.f, **new_params))
                             try:
-                                result = await run_f()
+                                result = await run_f(self)
                             except Exception as e:
                                 try:
                                     raise Task.ComputationException(f"Error in computation of {short_name}") from e
@@ -440,10 +478,10 @@ class Task:
                 
             @historize("Autostore")
             @add_exception_note(f"During storing of task {short_name}")
-            async def automatic_store():
-                async with TaskGroup() as tg:
-                    subtasks = {storage : tg.create_task(self.compute_options.result_storage.transfert(storage)) for storage in  self.storage_opt.additional + self.storage_opt.checkpoints}
-            await automatic_store()
+            async def automatic_store(s):
+                async with asyncio.TaskGroup() as tg:
+                    subtasks = {storage : tg.create_task(self.compute_options.result_storage.transfert(self, storage)) for storage in  self.storage_opt.additional + self.storage_opt.checkpoints}
+            await automatic_store(self)
 
 
 

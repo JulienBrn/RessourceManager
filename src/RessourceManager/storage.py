@@ -169,7 +169,7 @@ class LockImplStorage(Storage):
                 if not id in self.storage.lock_counters:
                     self.storage.lock_counters[id] =0
                 self.storage.lock_counters[id]+=1
-        def __exit__(self):
+        def __exit__(self,  exc_type, exc_value, exc_tb):
             for id in self.tasks:
                 self.storage.lock_counters[id]-=1
                 if self.storage.lock_counters[id] ==0:
@@ -185,7 +185,7 @@ class LockImplStorage(Storage):
 
     def lock(self, task: Task | List[Task]) -> ContextManager[None]:
         task = [task] if not isinstance(task, List) else task
-        lock = LockImplStorage._Lock([t.storage_id for t in task], self.callback)
+        lock = LockImplStorage._Lock([t.storage_id for t in task], self, self.callback)
         return lock
     
 class DictMemoryStorage(LockImplStorage):
@@ -218,9 +218,10 @@ class DictMemoryStorage(LockImplStorage):
     def get_location(self, task: Task):
         return task.storage_id
     
-    def transfert(self, task: Task, other: Storage) -> NoReturn:
+    async def transfert(self, task: Task, other: Storage) -> None:
+        print(f"transfert called with storage {self} to storage {other}")
         val = self.load(task)
-        other.dump(val)
+        other.dump(task, val)
         
     def __repr__(self):
         return f"DictMemoryStorage"
@@ -272,7 +273,7 @@ class AbstractLocalDiskStorage(LockImplStorage):
     
 
     def get_location(self, task: Task) -> str:
-        return self.get_folder_location(task).stem + self.content_name
+        return self.get_folder_location(task) / self.content_name
     
     def get_file_location(self, task: Task) -> Optional[pathlib.Path]:
         matching = list(self.get_folder_location(task).glob(f"{self.content_name}.*"))
@@ -299,14 +300,17 @@ class AbstractLocalDiskStorage(LockImplStorage):
         extension = self.dump_content(temp_path, val)
         if temp_path.exists():
             self.remove(task) #because there might be an old file with different extension that might not be rewritten
-            shutil.move(str(temp_path), str(self.get_folder_location(task) / f"content.{extension}"))
+            shutil.move(str(temp_path), str(self.get_folder_location(task) / f"{self.content_name}.{extension}"))
         else:
             raise Exception(f"No file created by dump content... Expecting {temp_path}")
         
     def remove(self, task: Task):
-        loc = self.get_file_location() 
+        loc = self.get_file_location(task) 
         if not loc is None:
-            shutil.rmtree(str(loc))
+            if loc.is_file():
+                loc.unlink()
+            else:
+                shutil.rmtree(str(loc))
 
     def load_content(self, path) -> Any: raise NotImplementedError("The function load_content should be defined in non-abstract children of AbstractLocalFileStorage")
     def dump_content(self, path, val) -> str: raise NotImplementedError("The function dump_content should be defined in non-abstract children of AbstractLocalFileStorage")
@@ -320,11 +324,11 @@ class ReturnStorage(DictMemoryStorage):
         Its main purpose is to be used by engines.
     """
     def __init__(self):
-        super().__init__(callback = lambda id: self.values.pop(id))
+        super().__init__(callback = lambda id: self.values.pop(id) if id in self.values else None)
 
     
     def dump(self, task, val: Any):
-        if self.locked(task):
+        if self.is_locked(task):
             super().dump(task, val)
         
     def __repr__(self):
@@ -360,7 +364,7 @@ class MemoryStorage(DictMemoryStorage):
             self.timer.start()
         else:
             self.timer = None
-        self.check_after_dump = check_before_dump
+        self.check_before_dump = check_before_dump
     
 
     def free_if_necessary(self):
@@ -371,7 +375,7 @@ class MemoryStorage(DictMemoryStorage):
     def dump(self, task, val: Any):
         if self.check_before_dump:
             self.free_if_necessary()
-        super().dump(self, task, val)
+        super().dump(task, val)
         
     def __repr__(self):
         return f"MemoryStorage"
@@ -389,10 +393,14 @@ class PickledDiskStorage(AbstractLocalDiskStorage):
     def load_content(self, path) -> Any: 
         return pickle.load(path.open("rb"))
 
-    def dump_content(self, path, val) -> str: 
+    def dump_content(self, path: pathlib.Path, val) -> str: 
+        print(f"dump called with storage {self} path = {path.absolute()} val={val}")
         from tblib import pickling_support
         pickling_support.install()
-        pickle.dump(val, path.open("wb"))
+        with path.open("wb") as f:
+            pickle.dump(val, f)
+        print(f"dump done with storage {self} path = {path.absolute()}")
+        return "pkl"
 
     def __repr__(self):
         return f"PickledDiskStorage({self.base_folder})"
@@ -411,14 +419,14 @@ class JsonLocalFileKeyStorage(LockImplStorage):
     def __init__(self, filename: str, key: int | str | List[int | str], f: Callable[[Task, Any], Any] = lambda task, val: val, base_folder = ".cache"):
         super().__init__()
         self.filename = filename
-        self.base_folder = base_folder
+        self.base_folder = pathlib.Path(base_folder)
         self.keys = key if isinstance(key, list) else [key]
         self.f = f
-        if pathlib.Path(filename).suffix !="json":
+        if pathlib.Path(filename).suffix !=".json":
             logger.warning("Expecting json file...")
     
     def get_file_location(self, task: Task) -> pathlib.Path:
-        return self.base_folder / str(task.storage_id) / self.filename
+        return self.base_folder / task.func_id / str(task.storage_id) / self.filename
         
     def get_location(self, task: Task) -> Tuple[pathlib.Path, str]:
         return (self.get_file_location(task), self.key)
@@ -449,15 +457,15 @@ class JsonLocalFileKeyStorage(LockImplStorage):
         temp_path = self.get_file_location(task).with_stem("temp"+self.get_file_location(task).stem).with_suffix(".temp")
         temp_path.parent.mkdir(exist_ok=True, parents=True)
         dtmp = d
-        for key in self.keys:
+        for key in self.keys[:-1]:
             if not key in dtmp:
                 dtmp[key] = {}
             dtmp = dtmp[key]
         if not isinstance(val, JsonLocalFileKeyStorage.Remove):
-            dtmp = val
+            dtmp[self.keys[-1]] = self.f(task, val)
         else:
             del dtmp
-        json.dump(d, temp_path.open("w"), indent=4)
+        json.dump(d, temp_path.open("w"), indent=4, default=lambda x: x.__dict__ if hasattr(x, "__dict__") and not isinstance(x, Storage)  and not hasattr(x, "_run")else str(x))
         if temp_path.exists():
             shutil.move(str(temp_path), str(self.get_file_location(task)))
         else:
@@ -519,7 +527,7 @@ def shape_type_metadata(t: Task, val: Any):
     return {
         "shape": val.shape if hasattr(val, "shape") else None,
         "len": len(val) if hasattr(val, "__len__") else None,
-        "type": type(val),
+        "type": str(type(val)),
         "val": str(val)[0:50]
     }
 
