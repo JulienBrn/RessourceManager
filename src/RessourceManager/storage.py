@@ -212,7 +212,7 @@ class DictMemoryStorage(LockImplStorage):
         self.values[task.storage_id] = val
 
     def remove(self, task):
-        if task.storage_id in self.d:
+        if task.storage_id in self.values:
             del self.values[task.storage_id]
 
     def get_location(self, task: Task):

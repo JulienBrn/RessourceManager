@@ -242,7 +242,7 @@ class Task:
         # params_id = {k:get_param_id(v, o) for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
         storage_id_dict = {
             k:param.reconstruct({
-                t_name: t.storage_id if param.options.dependency=="ignore" else t.result(exception="return") 
+                t_name: t.storage_id if param.options.dependency=="graph" else t.result(exception="return") 
                     for t_name,t in param.embedded_tasks.items()
             }) for k, param in self.param_dict.items() if not param.options.dependency=="ignore"}
         
@@ -288,7 +288,12 @@ class Task:
                 await self._run(executor=executor, progress=None)
                 self.compute_options.result_storage.transfert(self, storage)
                 
-    def invalidate(self): raise NotImplementedError
+    async def invalidate(self): 
+        async with asyncio.TaskGroup() as tg:
+            for task in self.used_by: 
+                tg.create_task(task.invalidate())
+            tg.create_task(self._remove())
+
     def add_downstream_task(self, tasks: Task | List[Task]): raise NotImplementedError
     def get_dependency_graph(self, which=Literal["upstream", "downstream", "both"]) -> graphviz.Digraph: raise NotImplementedError
     def get_history(self) -> pd.DataFrame: 
@@ -393,6 +398,15 @@ class Task:
     # @historize("compute", info="None")
     # async def compute(self, args, executor: concurrent.futures.Executor):
     #     return await asyncio.get_event_loop().run_in_executor(executor, functools.partial(self.f, **args))
+
+
+    @historize("remove")
+    async def _remove(self):
+        for storage in self.storage_opt.checkpoints + [self.compute_options.result_storage]:
+            storage.remove(self)
+        if hasattr(self, "short_name"): del self.short_name
+        if hasattr(self, "identifier"): del self.identifier
+        if hasattr(self, "storage_id"): del self.storage_id
 
     @historize("fetch_param")
     async def _get_param(self, opt: TaskParamOptions, task, context_stack: contextlib.ExitStack, executor):
