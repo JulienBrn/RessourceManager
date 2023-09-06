@@ -183,22 +183,29 @@ def add_exception_note(note: str):
 computation_asyncio_lock = {}
 
 default_executor = concurrent.futures.ThreadPoolExecutor()
-
+import time
 class Updater(tqdm.tqdm):
     cancel_ev: Optional[threading.Event]
+    last_check: datetime.datetime
 
     def __init__(self, *args, cancel_ev = None, **kwargs):
         self.cancel_ev = cancel_ev
+        self.last_check = time.time()
         super().__init__(*args, **kwargs)
-        self.cancel_ev = cancel_ev
+        
         # print(f"CANCELEV {self.cancel_ev} {cancel_ev}")
         # input()
         
 
     def refresh(self, nolock=False, lock_args=None):
         super().refresh(nolock, lock_args)
-        if not self.cancel_ev is None and self.cancel_ev.is_set():
-            raise asyncio.CancelledError("CancelledError from outside executor")
+        if not self.cancel_ev is None:
+            now = time.time()
+            if now - self.last_check > 10:
+                self.last_check = now
+                if self.cancel_ev.is_set():
+                    raise asyncio.CancelledError("CancelledError from outside executor")
+
         # print(self.cancel_ev)
 
     # def cancel(self):
@@ -216,7 +223,8 @@ class Updater(tqdm.tqdm):
 
 def call_func_with_updater(f, *args, cancel_ev, **kwargs):
     # print(f"callfunc {cancel_ev}")
-    f(*args, updater = Updater(cancel_ev = cancel_ev), **kwargs)
+    return f(*args, updater = Updater(cancel_ev = cancel_ev), **kwargs)
+    # return f(*args, updater = Updater(cancel_ev = None), **kwargs)
 
 @dataclass
 class Task:

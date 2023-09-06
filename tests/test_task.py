@@ -7,17 +7,22 @@ beautifullogger.setup()
 
 def syracuse(n, updater: Updater):
     tot = 17
-    updater.total = n
+    if not updater is None:
+        updater.total = n
     for i in range(n):
         tot = tot//2 if tot % 2 ==0 else 3*tot+1
-        updater.update(1)
+        if not updater is None:
+            if i %1000 ==0:
+                updater.update(1000)
         # print(updater.n)
     return tot
 
 
-def f(a: pd.DataFrame, b: pd.DataFrame, n: int, updater: Updater, desc):
+def f(a: pd.DataFrame, b: pd.DataFrame, n: int, desc, updater: Updater = None):
     # time.sleep(5)
     # try:
+        if updater is None:
+            updater = tqdm.tqdm()
         updater.set_description(desc)
         res = pd.concat([a+b+syracuse(n, updater), a*b])
         return res
@@ -29,7 +34,7 @@ def f(a: pd.DataFrame, b: pd.DataFrame, n: int, updater: Updater, desc):
     #     raise
 
 init_df = pd.DataFrame([[i, 10*i] for i in range(3)], columns=["x", "y"])
-n =  11**8
+n =  5*10**8
 
 param_dict = dict(
     a= Task.ParamInfo(
@@ -116,18 +121,18 @@ threadexecutor = concurrent.futures.ThreadPoolExecutor(3)
 async def main():
     await t.invalidate()
     await t0.invalidate()
-    print("t Invalidated")
+    print("t, t0 Invalidated")
     # hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     # print(hist_df)
-    myexecutor = processexecutor
+    myexecutor = "sync"
     try:
         task = asyncio.get_running_loop().create_task(t1.result(executor=myexecutor, progress=None))
-        await asyncio.sleep(2)
-        task.cancel()
+        # await asyncio.sleep(2)
+        # task.cancel()
         await task
     except asyncio.CancelledError:
         print("CANCELLED")
-        myexecutor.shutdown(wait=True, cancel_futures=False)
+        # myexecutor.shutdown(wait=True, cancel_futures=False)
         # print("Shutdown")
     hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     print(hist_df)
