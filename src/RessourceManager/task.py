@@ -8,6 +8,9 @@ from RessourceManager.storage import Storage, memory_storage, pickled_disk_stora
 import inspect, pathlib, traceback, datetime, threading, multiprocessing, graphviz
 # from RessourceManager.task_manager import TaskManager
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
+
 @dataclass
 class TaskGroup:
     name: str
@@ -134,7 +137,7 @@ def historize(action = None, info = None, result_info_computer: Callable[[Any], 
 
 def format_exception_dict(cls, format_string: str, excpts: Dict[str, BaseException]):
     def format_exception_dict_impl(excpts):
-        if isinstance(excpts, BaseException):
+        if isinstance(excpts, Exception):
             return excpts, [""]
         excpts = {k:format_exception_dict_impl(d) for k, d in excpts.items()}
         excpts = {k:(r, nks) for k, (r, nks) in excpts.items() if not r is None}
@@ -145,7 +148,7 @@ def format_exception_dict(cls, format_string: str, excpts: Dict[str, BaseExcepti
             (k, (r, nks)) = excpts.popitem()
             if r is None:
                 return None
-            elif isinstance(r, BaseExceptionGroup):
+            elif isinstance(r, ExceptionGroup):
                 return r, [f"{k}.{nk}" for nk in nks]
             else:
                 return r, nks
@@ -157,7 +160,7 @@ def format_exception_dict(cls, format_string: str, excpts: Dict[str, BaseExcepti
         res = cls(format_string.format(ks))
         try:
             raise res from e
-        except BaseException as e:
+        except Exception as e:
             return e
     else:
         return None
@@ -167,13 +170,13 @@ def add_exception_note(note: str):
         def new_f(*args, **kwargs):
             try:
                 return f(*args, **kwargs)
-            except BaseException as e:
+            except Exception as e:
                 e.add_note(note)
                 raise e
         async def new_f_async(*args, **kwargs):
             try:
                 return await f(*args, **kwargs)
-            except BaseException as e:
+            except Exception as e:
                 e.add_note(note)
                 raise e
         # print(f"adding note {note} decoration for {f.__name__}. is coroutine: {inspect.iscoroutinefunction(f)}")
@@ -182,7 +185,7 @@ def add_exception_note(note: str):
 
 computation_asyncio_lock = {}
 
-default_executor = concurrent.futures.ThreadPoolExecutor()
+default_executor = "sync"
 import time
 class Updater(tqdm.tqdm):
     cancel_ev: Optional[threading.Event]
@@ -200,10 +203,12 @@ class Updater(tqdm.tqdm):
     def refresh(self, nolock=False, lock_args=None):
         super().refresh(nolock, lock_args)
         if not self.cancel_ev is None:
-            now = time.time()
-            if now - self.last_check > 10:
-                self.last_check = now
+            # now = time.time()
+            # if now - self.last_check > 1:
+                # self.last_check = now
                 if self.cancel_ev.is_set():
+                    logger.warning("AutoCancelling requested")
+                    self.cancel_ev.clear()
                     raise asyncio.CancelledError("CancelledError from outside executor")
 
         # print(self.cancel_ev)
@@ -484,7 +489,6 @@ class Task:
                         subtasks = {k : {t_name: tg.create_task(add_exception_note(f"In fetching param {k}.{t_name}")(self._get_param)(self.param_dict[k].options, t, param_context_stack, executor)) for t_name, t in self.param_dict[k].embedded_tasks.items()} for k in self.param_dict}
                     embedded_args = {k: {t_name: t.result() for t_name, t in embedded.items()} for k, embedded in subtasks.items()}
                     excpts = {}
-                    i = 0
                     for k, t_name in [(k, t_name) for k in embedded_args for t_name in embedded_args[k]]:
                         if self.param_dict[k].options.exception=="propagate" and isinstance(embedded_args[k][t_name], Task.TaskExceptionValue):
                             if k not in excpts:
@@ -501,7 +505,8 @@ class Task:
                     async def compute():
                         if not self.storage_id in computation_asyncio_lock:
                             computation_asyncio_lock[self.storage_id] = asyncio.Lock()
-                        async with computation_asyncio_lock[self.storage_id]:
+                        # async with computation_asyncio_lock[self.storage_id]:
+                        if True:
                             if self.compute_options.result_storage.has(self):
                                 return
                             
@@ -513,11 +518,15 @@ class Task:
                                 # mnew_params = dict(**new_params, updater=updater) if self.compute_options.progress else new_params
                                 match mexecutor:
                                     case "async":
-                                        return await self.f(**new_params) 
+                                        return await functools.partial(call_func_with_updater, self.f, **new_params, cancel_ev=None)()
                                     case "sync":
-                                        return self.f(**new_params)
-                                    case "loop_default":
-                                        return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **new_params))
+                                        try:
+                                            return functools.partial(call_func_with_updater, self.f, **new_params, cancel_ev=None)()
+                                        except Exception as e:
+                                            logger.warning(f"sync exception {e}")
+                                            raise
+                                    # case "loop_default":
+                                    #     return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **new_params))
                                     case  custom_executor:
                                         with contextlib.ExitStack() as stack:
                                             if isinstance(custom_executor, concurrent.futures.ThreadPoolExecutor):
@@ -527,14 +536,20 @@ class Task:
                                                 manager = SyncManager()
                                                 stack.enter_context(manager)
                                                 cancel_ev = manager.Event()
+                                            fut = asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(call_func_with_updater, self.f, **new_params, cancel_ev=cancel_ev))
                                             try :
-                                                return await asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(call_func_with_updater, self.f, **new_params, cancel_ev=cancel_ev))
+                                                return await fut
                                             except asyncio.CancelledError:
+                                                logger.warning(f"Triggering cancel from asyncio loop for task {self.storage_id}")
                                                 cancel_ev.set()
-                                                await asyncio.sleep(1)
+                                                while cancel_ev.is_set():
+                                                    await asyncio.sleep(1)
                                                 raise
                             try:
                                 result = await run_f(self)
+                            except asyncio.CancelledError:
+                                logger.warning(f"Result cancelled for task {self.storage_id}")
+                                raise
                             except Exception as e:
                                 try:
                                     raise Task.ComputationException(f"Error in computation of {short_name}") from e

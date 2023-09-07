@@ -12,9 +12,9 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         logger.info("Keyboard interupt")
         sys.exit()
-        return
     else:
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
+    logger.info("Done")
 
 
 sys.excepthook = handle_exception

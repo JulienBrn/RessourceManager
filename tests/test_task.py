@@ -4,6 +4,14 @@ from RessourceManager.storage import result_metadata_storage, readable_human_wri
 
 logger=logging.getLogger()
 beautifullogger.setup()
+logging.getLogger("RessourceManager.id_makers").setLevel(logging.ERROR)
+# import signal
+import time
+ 
+def handler(signum, frame):
+    raise KeyboardInterrupt("Interupted by user")
+ 
+
 
 def syracuse(n, updater: Updater):
     tot = 17
@@ -20,7 +28,7 @@ def syracuse(n, updater: Updater):
 
 def f(a: pd.DataFrame, b: pd.DataFrame, n: int, desc, updater: Updater = None):
     # time.sleep(5)
-    # try:
+    try:
         if updater is None:
             updater = tqdm.tqdm()
         updater.set_description(desc)
@@ -29,12 +37,18 @@ def f(a: pd.DataFrame, b: pd.DataFrame, n: int, desc, updater: Updater = None):
     # except asyncio.CancelledError:
     #     print(f"Cancelling {desc} from within task")
     #     raise
-    # except BaseException as e:
-    #     logger.exception("Within compute exception", exc_info=e)
-    #     raise
+    except KeyboardInterrupt:
+        logger.warning("Within Task KeyBoard Interrupted")
+        raise 
+    except asyncio.CancelledError:
+        logger.warning("Within Task Cancelled")
+        raise 
+    except BaseException as e:
+         logger.exception("Within compute exception", exc_info=e)
+         raise
 
 init_df = pd.DataFrame([[i, 10*i] for i in range(3)], columns=["x", "y"])
-n =  5*10**8
+n =  1*10**8
 
 param_dict = dict(
     a= Task.ParamInfo(
@@ -117,7 +131,7 @@ tasks = {"t":t, "t0": t0, "t1": t1}
 
 processexecutor = concurrent.futures.ProcessPoolExecutor(3)
 threadexecutor = concurrent.futures.ThreadPoolExecutor(3)
-
+pd.set_option('display.max_rows', None)
 async def main():
     await t.invalidate()
     await t0.invalidate()
@@ -125,15 +139,26 @@ async def main():
     # hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     # print(hist_df)
     myexecutor = "sync"
-    try:
+    if myexecutor == "sync":
+        import signal
+        signal.signal(signal.SIGINT, handler)
+    with contextlib.ExitStack() as stack:
+        if isinstance(myexecutor, concurrent.futures.Executor):
+            stack.enter_context(myexecutor)
         task = asyncio.get_running_loop().create_task(t1.result(executor=myexecutor, progress=None))
+        logger.info("total task created and started running")
         # await asyncio.sleep(2)
+        # logger.info("triggering cancel")
         # task.cancel()
-        await task
-    except asyncio.CancelledError:
-        print("CANCELLED")
-        # myexecutor.shutdown(wait=True, cancel_futures=False)
-        # print("Shutdown")
+        try:
+            try:
+                logger.info("Awaiting result")
+                await task
+            except KeyboardInterrupt:
+                logger.info("Keyboard interuption, cancelling task")
+                task.cancel()
+        except asyncio.CancelledError:
+            logger.warning("All CANCELLED")
     hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     print(hist_df)
     print(f"Duration: {hist_df['date'].max() - hist_df['date'].min()}")
