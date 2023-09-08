@@ -47,14 +47,6 @@ class ProgressExecutor(concurrent.futures.Executor):
 
 
 
-def make_set_cancel(ev):
-    def set_cancel():
-        ev.clear()
-        ev.wait()
-    return set_cancel
-
-
-
 class CustomUpdater:
     def __init__(self, *args, check_cancel, on_progress, on_close=lambda:None, **kwargs):
         self.n=0
@@ -118,12 +110,6 @@ def make_f(f, *args, cancel_ev, progress_ev, progress_info, **kwargs):
     updater.close()
     return res
 
-def on_thread_progress(ev, info):
-    def on_progress(n, tot):
-        info["n"] = n 
-        info["tot"] = tot
-        ev.set()
-    return on_progress
 
 def make_get_thread_progress(info, ev):
     def get_progress():
@@ -134,6 +120,12 @@ def make_get_thread_progress(info, ev):
             return info["n"], info["tot"]
     return get_progress
     
+
+def make_set_cancel(ev):
+    def set_cancel():
+        ev.clear()
+        # ev.wait()
+    return set_cancel
 
 def update_tqdm(tqdm, n, tot):
     tqdm.n = n

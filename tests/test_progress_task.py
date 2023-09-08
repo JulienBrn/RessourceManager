@@ -25,7 +25,7 @@ tp = ThreadPoolProgressExecutor(tqdm = tqdm_with_desc)
 pp = ProcessPoolProgressExecutor(tqdm = tqdm_with_desc)
 se = SyncProgressExecutor(tqdm = tqdm_with_desc)
 
-executor = se
+executor = pp
 
 async def main():
     loopsiginthandler = signal.getsignal(signal.SIGINT)
