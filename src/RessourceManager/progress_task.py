@@ -29,76 +29,43 @@ class ProgressTask(concurrent.futures.Future):
             c(n, total)
 
     async def check_for_progress(self, sleep_duration=0.1):
-        # print("Checking for done", self.done())
         while not self.done():
-            # print("Checking for done", self.done())
             res = self.get_progress()
             if not res is None:
                 self._notify_progress(res[0], res[1])
             await asyncio.sleep(sleep_duration)
         return self.result()
-        # print(self.result())
 
 
 class ProgressExecutor(concurrent.futures.Executor):
     def submit(self, f, *args, **kwargs) -> ProgressTask:
         raise NotImplementedError("Abstract submit method")
 
-def make_check_cancel(ev: threading.Event):
-    def check_cancel():
-        if not ev.is_set():
-            ev.set()
-            raise asyncio.CancelledError() from None
-    return check_cancel
+
 
 def make_set_cancel(ev):
     def set_cancel():
         ev.clear()
-        print("waiting")
         ev.wait()
-        print("waited")
     return set_cancel
 
 
 
 class CustomUpdater:
-    def __init__(self, *args, check_cancel, on_progress, **kwargs):
+    def __init__(self, *args, check_cancel, on_progress, on_close=lambda:None, **kwargs):
         self.n=0
         self.total=0
-        self._child_init(check_cancel, on_progress)
-        # super().__init__(*args, **kwargs, leave=False)
-        # tqdm.tqdm._instances.remove(self)
-        # self.set_description("child")
-        self.display()
-        
-
-    def _child_init(self, check_cancel, on_progress):
         self.check_cancel = check_cancel
         self.on_progress = on_progress
+        self.on_close = on_close
         self.last_time = time.time()
-        self.last_amount = 0
-
+        self.last_amount = self.n
+        
+        
     def display(self, *args, **kwargs):
-        # super().update(*args, **kwargs)
-        # now = time.time()
-        # if self.last_time - now > self.mininterval:
         self.check_cancel()
-        # print("TOTAL", self.total)
         self.on_progress(self.n, self.total)
-        # self.last_time = now
-    # def update(self, n=1):
-    #     # print("Updating")
-    #     super().update(n)
-        # print("Updated")
 
-
-    # def refresh(self, *args, **kwargs):
-    #     # print("refreshing")
-    #     # print("again")
-    #     # kwargs.update(nolock=True)
-    #     # print(kwargs)
-    #     super().refresh(*args, **kwargs)
-        # print("refreshed")
 
     def update(self, amount):
         self.n+=amount
@@ -120,22 +87,38 @@ class CustomUpdater:
         for obj in self.iterable:
             yield obj
             self.update(1)
+        self.close()
     
-    # def close(self): pass
+    def close(self):
+        self.display()
+        self.on_close()
 
-def make_f(f, *args, cancel_ev, on_progress, init_progress, **kwargs):
-    # print("make f")
-    check_cancel = make_check_cancel(cancel_ev)
-    on_progress = on_thread_progress(*init_progress)
-    updater = CustomUpdater(check_cancel=check_cancel, on_progress=on_progress)
-    # print("calling f")
-    return f(*args, check_cancel = check_cancel, progress = updater, **kwargs)
+def make_f(f, *args, cancel_ev, progress_ev, progress_info, **kwargs):
+    def check_cancel():
+        if not cancel_ev.is_set():
+            cancel_ev.set()
+            raise asyncio.CancelledError() from None
+
+    def on_progress(n, tot):
+        progress_info["n"] = n 
+        progress_info["tot"] = tot
+        progress_ev.set()
+
+    def on_close():
+        while progress_ev.is_set():
+            time.sleep(0.1)
+    
+
+    updater = CustomUpdater(check_cancel=check_cancel, on_progress=on_progress, on_close =on_close)
+    res = f(*args, check_cancel = check_cancel, progress = updater, **kwargs)
+    updater.close()
+    return res
 
 def on_thread_progress(ev, info):
     def on_progress(n, tot):
-        ev.set()
         info["n"] = n 
         info["tot"] = tot
+        ev.set()
     return on_progress
 
 def make_get_thread_progress(info, ev):
@@ -151,12 +134,7 @@ def make_get_thread_progress(info, ev):
 def update_tqdm(tqdm, n, tot):
     tqdm.n = n
     tqdm.total=tot
-    tqdm.update()
-
-# class InfoHolder:
-#     def __init__(self, n, tot):
-#         self.n = n
-#         self.tot = tot
+    tqdm.update(0)
 
 class ThreadPoolProgressExecutor(concurrent.futures.ThreadPoolExecutor, ProgressExecutor):
     def __init__(self, *args, tqdm=tqdm.tqdm, **kwargs):
@@ -167,18 +145,17 @@ class ThreadPoolProgressExecutor(concurrent.futures.ThreadPoolExecutor, Progress
         continue_ev = threading.Event()
         continue_ev.set()
         progress_ev = threading.Event()
-        progress_info = dict(n=0, tot=1)
+        progress_info = dict(n=0, tot=0)
             
-        # print("Sunmitted")
-        t = super().submit(make_f, f, *args, cancel_ev = continue_ev, on_progress=on_thread_progress, init_progress=(progress_ev, progress_info) , **kwargs)
-        # print("Submitted")
+        t = super().submit(make_f, f, *args, cancel_ev = continue_ev, progress_ev=progress_ev, progress_info=progress_info , **kwargs)
+
         t.__class__ = ProgressTask
         t._child_init(make_set_cancel(continue_ev), make_get_thread_progress(progress_info, progress_ev))
         if not self.tqdm is None:
             progress_bar = self.tqdm(*progress_init_args)
             t.add_progress_callback(lambda n, tot: update_tqdm(progress_bar, n, tot))
             t.add_done_callback(lambda r: (progress_bar.close()))
-        # print("Returning")
+
         return t
 
 
@@ -196,18 +173,17 @@ class ProcessPoolProgressExecutor(concurrent.futures.ProcessPoolExecutor, Progre
         progress_ev = self.manager.Event()
         progress_info = self.manager.dict()
         progress_info["n"] = 0
-        progress_info["tot"] = 1
+        progress_info["tot"] = 0
             
-        # print("Sunmitted")
-        t = super().submit(make_f, f, *args, cancel_ev = continue_ev, on_progress=on_thread_progress, init_progress=(progress_ev, progress_info) , **kwargs)
-        # print("Submitted")
+        t = super().submit(make_f, f, *args, cancel_ev = continue_ev, progress_ev=progress_ev, progress_info=progress_info , **kwargs)
+
         t.__class__ = ProgressTask
         t._child_init(make_set_cancel(continue_ev), make_get_thread_progress(progress_info, progress_ev))
         if not self.tqdm is None:
             progress_bar = self.tqdm(*progress_init_args)
             t.add_progress_callback(lambda n, tot: update_tqdm(progress_bar, n, tot))
             t.add_done_callback(lambda r: progress_bar.close())
-        # print("Returning")
+
         return t
     
     def __enter__(self, *args, **kwargs):
@@ -232,36 +208,47 @@ class SyncProgressExecutor(ProgressExecutor):
     def __init__(self, *args, tqdm=tqdm.tqdm, **kwargs):
         super().__init__(*args, **kwargs)
         self.tqdm = tqdm
+        self.shutdowned = False
 
     def submit(self, f, *args, progress_init_args=(), **kwargs) -> ProgressTask:
-        continue_ev = SyncEvent()
-        continue_ev.set()
-        progress_ev = SyncEvent()
-        progress_info = dict(n=0, tot=1)
-        res = []
-        check_cancel = lambda: None
-        on_progress= lambda n, tot:res[0]._notify_progress(n, tot)
+        if not self.shutdowned:
+            continue_ev = SyncEvent()
+            continue_ev.set()
+            progress_info = dict(n=0, tot=0)
+            res = []
+            check_cancel = lambda: None
+            on_progress= lambda n, tot:res[0]._notify_progress(n, tot) if len(res) > 0 else None
 
+            import types
+            t = concurrent.futures.Future()
+            # t._child_init = types.MethodType(ProgressTask._child_init, t)
+            # t.add_progress_callback = types.MethodType(ProgressTask.add_progress_callback, t)
+            # t.check_for_progress = types.MethodType(ProgressTask.check_for_progress, t)
+            # t._notify_progress = types.MethodType(ProgressTask._notify_progress, t)
+            t.__class__ = ProgressTask
+            t._child_init(lambda:None, lambda: (progress_info["n"], progress_info["tot"]))
+            res.append(t)
+            if not self.tqdm is None:
+                progress_bar = self.tqdm(*progress_init_args)
+                t.add_progress_callback(lambda n, tot: update_tqdm(progress_bar, n, tot))
+                t.add_done_callback(lambda r: (progress_bar.close()))
 
-        async def run_f():
-            await asyncio.sleep(0.1)
-            return f(*args, check_cancel=check_cancel, progress=CustomUpdater(check_cancel=check_cancel, on_progress=on_progress))
-        t = asyncio.create_task(run_f())
+            t.set_result(f(*args, check_cancel=check_cancel, progress=CustomUpdater(check_cancel=check_cancel, on_progress=on_progress)))
+        # async def run_f():
+        #     await asyncio.sleep(0.1)
+        #     return f(*args, check_cancel=check_cancel, progress=CustomUpdater(check_cancel=check_cancel, on_progress=on_progress))
+        # t = asyncio.create_task(run_f())
         # t.__class__ = ProgressTask
-        import types
-        t._child_init = types.MethodType(ProgressTask._child_init, t)
-        t.add_progress_callback = types.MethodType(ProgressTask.add_progress_callback, t)
-        t.check_for_progress = types.MethodType(ProgressTask.check_for_progress, t)
-        t._notify_progress = types.MethodType(ProgressTask._notify_progress, t)
-        t._child_init(lambda:None, lambda: (progress_info["n"], progress_info["tot"]))
         
-        res.append(t)
-        if not self.tqdm is None:
-            progress_bar = self.tqdm(*progress_init_args)
-            t.add_progress_callback(lambda n, tot: update_tqdm(progress_bar, n, tot))
-            t.add_done_callback(lambda r: (progress_bar.close()))
+        
+        
+        
+        
         # print("Returning")
         return t
+    
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        self.shutdowned = True
     
     def __enter__(self, *args, **kwargs):pass
 
