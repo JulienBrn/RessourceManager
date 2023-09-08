@@ -1,16 +1,18 @@
 from RessourceManager.progress_task import *
 import time, asyncio
 
-def f(n, check_cancel, progress: tqdm.tqdm):
-    # print("called")
+def long_compute(n):
+    tot = 17
+    for i in range(int(n*25000000)):
+        tot = tot//2 if tot % 2 ==0 else 3*tot+1
+        # print(updater.n)
+    return tot
+
+
+def f(n, check_cancel, progress: CustomUpdater):
     progress.total = n
-    # progress.set_description("child")
     for i in progress(range(n)):
-        # print(i)
-        time.sleep(0.1)
-        # progress.update(1)
-        # check_cancel()
-    # input("done")
+        long_compute(0.1)
     return n
 
 tqdm_with_desc = lambda x: tqdm.tqdm(desc=x)
@@ -18,7 +20,7 @@ tp = ThreadPoolProgressExecutor(3, tqdm = tqdm_with_desc)
 pp = ProcessPoolProgressExecutor(3, tqdm = tqdm_with_desc)
 se = SyncProgressExecutor(tqdm = tqdm_with_desc)
 
-executor = tp
+executor = pp
 
 async def main():
     with executor:
@@ -31,7 +33,7 @@ async def main():
             t1 = tg.create_task(fut1.check_for_progress())
             t2 = tg.create_task(fut2.check_for_progress())
             t3 = tg.create_task(fut3.check_for_progress())
-    # print("\r")
+    # print("")
     try: 
         print(f"t1 = {t1.result()}")
         pass
@@ -50,5 +52,8 @@ async def main():
         
 
 if __name__ == "__main__":
+    start = time.time()
     asyncio.run(main())
+    end = time.time()
+    print(f"Total time {end-start}s")
     # print("done")
