@@ -138,7 +138,7 @@ async def main():
     print("t, t0 Invalidated")
     # hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     # print(hist_df)
-    myexecutor = "sync"
+    myexecutor = threadexecutor
     if myexecutor == "sync":
         import signal
         signal.signal(signal.SIGINT, handler)

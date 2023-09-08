@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class TaskGroup:
-    name: str
+# @dataclass
+# class TaskGroup:
+#     name: str
 
 @dataclass
 class TaskParamOptions:
@@ -194,7 +194,7 @@ class Updater(tqdm.tqdm):
     def __init__(self, *args, cancel_ev = None, **kwargs):
         self.cancel_ev = cancel_ev
         self.last_check = time.time()
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs, disable=True)
         
         # print(f"CANCELEV {self.cancel_ev} {cancel_ev}")
         # input()
