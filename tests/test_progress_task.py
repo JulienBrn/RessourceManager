@@ -1,5 +1,5 @@
 from RessourceManager.progress_task import *
-import time, asyncio
+import time, asyncio, signal
 
 def long_compute(n):
     tot = 17
@@ -17,23 +17,33 @@ def f(n, check_cancel, progress: CustomUpdater):
             time.sleep(0.1)
     return n
 
+
+defaultsiginthandler = signal.getsignal(signal.SIGINT)
+
 tqdm_with_desc = lambda x: tqdm.tqdm(desc=x)
 tp = ThreadPoolProgressExecutor(tqdm = tqdm_with_desc)
 pp = ProcessPoolProgressExecutor(tqdm = tqdm_with_desc)
 se = SyncProgressExecutor(tqdm = tqdm_with_desc)
 
-executor = pp
+executor = se
 
 async def main():
-    vals = [30, 40, 35, 60, 20, 50, 38, 27]
-    with executor:
-        async with asyncio.TaskGroup() as tg:
-            futs = [executor.submit(f, val, progress_init_args=("t"+str(i),)) for i, val in enumerate(vals)]
-            tasks = [tg.create_task(fut.check_for_progress()) for fut in futs]
-
-    for i, (val,task) in enumerate(zip(vals, tasks)):
-        print(f"Task {i} with val={val} has result {'cancelled' if task.cancelled() else task.result()}")
-
+    loopsiginthandler = signal.getsignal(signal.SIGINT)
+    se.declare_handlers(defaultsiginthandler, loopsiginthandler)
+    vals = [30, 40, 35, 60, 20, 50, 38, 27]*2
+    try:
+        with executor:
+            async with asyncio.TaskGroup() as tg:
+                futs = [executor.submit(f, val, progress_init_args=(f"t{i} (val={val})",)) for i, val in enumerate(vals)]
+                tasks = [tg.create_task(fut.check_for_progress()) for fut in futs]
+                # await asyncio.sleep(2)
+                # tasks[0].cancel()
+    except asyncio.CancelledError: pass
+    finally:
+        await asyncio.sleep(0.1)
+        for i, (val,task) in enumerate(zip(vals, tasks)):
+            print(f"Task {i} with val={val} has result {'cancelled' if task.cancelled() else task.result()}")
+    
         
 
 if __name__ == "__main__":

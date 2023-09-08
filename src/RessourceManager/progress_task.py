@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn
-import concurrent, threading, time, asyncio, tqdm,time, functools
+import concurrent, threading, time, asyncio, tqdm,time, functools, signal
 
 
 class ProgressTask(concurrent.futures.Future):
@@ -29,12 +29,16 @@ class ProgressTask(concurrent.futures.Future):
             c(n, total)
 
     async def check_for_progress(self, sleep_duration=0.1):
-        while not self.done():
-            res = self.get_progress()
-            if not res is None:
-                self._notify_progress(res[0], res[1])
-            await asyncio.sleep(sleep_duration)
-        return self.result()
+        try:
+            while not self.done():
+                res = self.get_progress()
+                if not res is None:
+                    self._notify_progress(res[0], res[1])
+                await asyncio.sleep(sleep_duration)
+            return self.result()
+        except asyncio.CancelledError:
+            self.cancel()
+            raise
 
 
 class ProgressExecutor(concurrent.futures.Executor):
@@ -204,36 +208,99 @@ class SyncEvent:
     def is_set(self):
         return self.ev
 
+
+class SyncProgressTask(ProgressTask):
+    progress_callbacks: Callable[[float, float], None]
+
+
+    def __init__(self, f, args, kwargs, executor, handlers=None):
+        super().__init__()
+        self.is_cancelled = False
+        self.progress_callbacks = []
+        self.args = args
+        self.f = f
+        self.kwargs = kwargs
+        self.handlers = handlers
+        self.executor = executor
+        self.done_callbacks =[]
+    def cancel(self):
+        self.is_cancelled = True
+
+    def add_progress_callback(self, fn):
+        self.progress_callbacks.append(fn)
+
+    def remove_progress_callback(self, fn):
+        self.progress_callbacks.remove(fn)
+
+    def add_done_callback(self, fn):
+        self.done_callbacks.append(fn)
+
+
+    def _notify_progress(self, n: float, total: float):
+        for c in self.progress_callbacks:
+            c(n, total)
+
+    async def check_for_progress(self, sleep_duration=0.1):
+        try:
+            self.set_running_or_notify_cancel()
+            if not self.is_cancelled:
+                def mcheck_cancel():
+                    if self.is_cancelled:
+                        raise asyncio.CancelledError() from None
+                progress = CustomUpdater(check_cancel=mcheck_cancel, on_progress=lambda n, tot: self._notify_progress(n, tot))
+                if not self.handlers is None:
+                    def myhandler(*args, **kwargs):
+                        # print("HANDLER!!!")
+                        # time.sleep(10)
+                        self.handlers[0](*args, **kwargs)
+                    signal.signal(signal.SIGINT, myhandler)
+            
+                    # input("Changed handlers")
+                    try:
+                        res = self.f(*self.args, check_cancel=mcheck_cancel, progress=progress, **self.kwargs)
+                    except KeyboardInterrupt:
+                        signal.signal(signal.SIGINT, self.handlers[1])
+                        self.handlers[1](None, None)
+                        self.executor.shutdown()
+                        raise asyncio.CancelledError() from None
+                    except:
+                        signal.signal(signal.SIGINT, self.handlers[1])
+                        raise
+                else:
+                    res = self.f(*self.args, check_cancel=mcheck_cancel, progress=progress, **self.kwargs)
+                    return res
+            else:
+                raise asyncio.CancelledError() from None
+        except BaseException as e:
+            for c in self.done_callbacks:
+                c(e)
+            raise
+        else:
+            for c in self.done_callbacks:
+                c(res)
+            
+
 class SyncProgressExecutor(ProgressExecutor):
     def __init__(self, *args, tqdm=tqdm.tqdm, **kwargs):
         super().__init__(*args, **kwargs)
         self.tqdm = tqdm
         self.shutdowned = False
-
+        self.tasks=[]
+        self.handlers =()
     def submit(self, f, *args, progress_init_args=(), **kwargs) -> ProgressTask:
-        if not self.shutdowned:
-            continue_ev = SyncEvent()
-            continue_ev.set()
-            progress_info = dict(n=0, tot=0)
-            res = []
-            check_cancel = lambda: None
-            on_progress= lambda n, tot:res[0]._notify_progress(n, tot) if len(res) > 0 else None
-
-            import types
-            t = concurrent.futures.Future()
-            # t._child_init = types.MethodType(ProgressTask._child_init, t)
-            # t.add_progress_callback = types.MethodType(ProgressTask.add_progress_callback, t)
-            # t.check_for_progress = types.MethodType(ProgressTask.check_for_progress, t)
-            # t._notify_progress = types.MethodType(ProgressTask._notify_progress, t)
-            t.__class__ = ProgressTask
-            t._child_init(lambda:None, lambda: (progress_info["n"], progress_info["tot"]))
-            res.append(t)
-            if not self.tqdm is None:
-                progress_bar = self.tqdm(*progress_init_args)
-                t.add_progress_callback(lambda n, tot: update_tqdm(progress_bar, n, tot))
-                t.add_done_callback(lambda r: (progress_bar.close()))
-
-            t.set_result(f(*args, check_cancel=check_cancel, progress=CustomUpdater(check_cancel=check_cancel, on_progress=on_progress)))
+        t= SyncProgressTask(f, args, kwargs, self, self.handlers)
+        if not self.tqdm is None:
+            progress_bar = self.tqdm(*progress_init_args)
+            t.add_progress_callback(lambda n, tot: update_tqdm(progress_bar, n, tot))
+            t.add_done_callback(lambda r: (progress_bar.close()))
+        self.tasks.append(t)
+        return t
+            # try:
+            #     t.set_result(f(*args, check_cancel=check_cancel, progress=CustomUpdater(check_cancel=check_cancel, on_progress=on_progress)))
+            # except KeyboardInterrupt:
+            #     self.shutdown()
+            # except Exception as e:
+            #     t.set_exception(e)
         # async def run_f():
         #     await asyncio.sleep(0.1)
         #     return f(*args, check_cancel=check_cancel, progress=CustomUpdater(check_cancel=check_cancel, on_progress=on_progress))
@@ -247,12 +314,16 @@ class SyncProgressExecutor(ProgressExecutor):
         # print("Returning")
         return t
     
+    def declare_handlers(self, default_handlers, loop_handler):
+        self.handlers= (default_handlers, loop_handler)
+
     def shutdown(self, wait=True, *, cancel_futures=False):
-        self.shutdowned = True
-    
+        for t in self.tasks:
+            t.cancel()
     def __enter__(self, *args, **kwargs):pass
 
-    def __exit__(self, *args, **kwargs):pass
+    def __exit__(self, *args, **kwargs):
+        self.shutdown()
 
 
 
