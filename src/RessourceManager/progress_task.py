@@ -83,7 +83,6 @@ class CustomUpdater:
         for obj in self.iterable:
             yield obj
             self.update(1)
-        # self.close()
     
     def close(self):
         self.display()

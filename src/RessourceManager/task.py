@@ -8,6 +8,7 @@ from RessourceManager.storage import Storage, memory_storage, pickled_disk_stora
 import inspect, pathlib, traceback, datetime, threading, multiprocessing, graphviz
 # from RessourceManager.task_manager import TaskManager
 from dataclasses import dataclass, field
+from progress_executor import ProgressExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ class ComputeOptions:
     result_storage: Storage = return_storage
     progress: bool = False
     n_retries: int = 1
-    executor: Literal["async", "sync", "demanded", "loop_default"] | concurrent.futures.Executor = "demanded"
+    executor: Literal["async", "demanded"] | ProgressExecutor = "demanded"
     alternative_paths: List[Any] = ()#Alternative computation paths dependant to what has already been computed
     
 @dataclass 
@@ -185,52 +186,6 @@ def add_exception_note(note: str):
 
 computation_asyncio_lock = {}
 
-default_executor = "sync"
-import time
-class Updater(tqdm.tqdm):
-    cancel_ev: Optional[threading.Event]
-    last_check: datetime.datetime
-
-    def __init__(self, *args, cancel_ev = None, **kwargs):
-        self.cancel_ev = cancel_ev
-        self.last_check = time.time()
-        super().__init__(*args, **kwargs, disable=True)
-        
-        # print(f"CANCELEV {self.cancel_ev} {cancel_ev}")
-        # input()
-        
-
-    def refresh(self, nolock=False, lock_args=None):
-        super().refresh(nolock, lock_args)
-        if not self.cancel_ev is None:
-            # now = time.time()
-            # if now - self.last_check > 1:
-                # self.last_check = now
-                if self.cancel_ev.is_set():
-                    logger.warning("AutoCancelling requested")
-                    self.cancel_ev.clear()
-                    raise asyncio.CancelledError("CancelledError from outside executor")
-
-        # print(self.cancel_ev)
-
-    # def cancel(self):
-    #     if not self.cancel_ev is None:
-    #         self.cancel_ev.set()
-
-    # def __getstate__(self):
-    #     return self.cancel_ev
-    
-    # def __setstate__(self, c):
-    #     r = Updater()
-    #     self.cancel_ev = c
-    #     self.__dict__ = r.__dict__
-    
-
-def call_func_with_updater(f, *args, cancel_ev, **kwargs):
-    # print(f"callfunc {cancel_ev}")
-    return f(*args, updater = Updater(cancel_ev = cancel_ev), **kwargs)
-    # return f(*args, updater = Updater(cancel_ev = None), **kwargs)
-
 @dataclass
 class Task:
     class TaskExceptionValue(Exception):pass
@@ -268,27 +223,11 @@ class Task:
     @historize("computing_identifier")
     def identifier(self): 
         identifier_dict = {k:param.reconstruct({t_name: t.identifier for t_name,t in param.embedded_tasks.items()}) for k, param in self.param_dict.items() if not param.options.dependency=="ignore"}
-        # def get_param_id(v, o: TaskParamOptions):
-        #     (l, reconstruct) = o.embedded_task_retriever(v)
-        #     return unique_id(reconstruct([task.identifier for task in l]))
-
-        # params_id = {k:get_param_id(v, o) for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
         return make_result_id(self.func_id, identifier_dict, False)
     
     @functools.cached_property
     @historize("computing_storage_id")
     def storage_id(self):
-        # def get_param_id(v, o: TaskParamOptions):
-        #     (l, reconstruct) = o.embedded_task_retriever(v)
-        #     match o.dependency:
-        #         case "graph":
-        #             return unique_id(reconstruct([task.storage_id for task in l]))
-        #         case "value":
-        #             return unique_id(reconstruct([task.result() for task in l]))
-        #         case _: 
-        #             raise ValueError(f"Unknown dependency option {o.dependency}")
-                
-        # params_id = {k:get_param_id(v, o) for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
         storage_id_dict = {
             k:param.reconstruct({
                 t_name: t.storage_id if param.options.dependency=="graph" else t.result(exception="return") 
@@ -314,7 +253,7 @@ class Task:
 
 
 
-    async def result(self, exception: (Literal["raise", "return"] | List[Exception]) = "raise", progress=tqdm.tqdm, executor = default_executor): 
+    async def result(self, executor: ProgressExecutor, exception: (Literal["raise", "return"] | List[Exception]) = "raise"): 
         for storage in self.storage_opt.checkpoints:
             with storage.lock(self):
                 if storage.has(self):
@@ -324,14 +263,14 @@ class Task:
                     else:
                         return res
         with self.compute_options.result_storage.lock(self):
-            await self._run(executor=executor, progress=None)
+            await self._run(executor=executor)
             res = self.compute_options.result_storage.load(self)
             if exception == "raise" and isinstance(res, Exception):
                 raise res
             else:
                 return res
             
-    async def write_to_storage(self, storage, progress=tqdm.tqdm, executor = default_executor): 
+    async def write_to_storage(self, storage, executor: ProgressExecutor): 
         if not storage.has(self):
             with self.compute_options.result_storage.lock():
                 await self._run(executor=executor, progress=None)
@@ -356,99 +295,6 @@ class Task:
     def get_stats(self) -> pd.DataFrame: raise NotImplementedError
 
 
-
-    # @historize("get_param")
-    # async def get_param(self, key, context_stack: Optional[contextlib.ExitStack], executor: concurrent.futures.Executor):
-    #     v, o = self.param_dict[key]
-    #     (l, reconstruct) = o.embedded_task_retriever(v)
-    #     excpt = []
-    #     match o.pass_as:
-    #         case "value":
-    #             param_value = [await t.result(exception="return", executor = executor) for t in l]
-    #             for v in param_value:
-    #                 if isinstance(v, Exception):
-    #                     excpt.append(v)
-    #         case ("task", storages) | ("location", storages):
-    #             if not context_stack is None:
-    #                 for t in l:
-    #                     for storage in storages:
-    #                         context_stack.enter_context(storage.lock(t)) #To ensure the parameter does not disappear from the location....
-    #             for t in l:
-    #                 for storage in storages:
-    #                     if not storage.has(t):
-    #                         t.write_on_storage(storage)   
-    #                 x = t.load(return_storage) if return_storage.has(t) else t.load(exception_storage)
-    #                 if isinstance(x, Exception):
-    #                     excpt.append(x)     
-    #         case _: 
-    #             raise ValueError(f"Unknown pass_as option {o.pass_as}")
-    #     match o.exception:
-    #         case "propagate":   
-    #             if not excpt ==[]:
-    #                 if len(l) == 1:
-    #                     raise excpt[0]
-    #                 else:
-    #                     raise ExceptionGroup("Errors in deconstructed tasks of parameter", excpt)
-    #         case "exception_as_arg": pass
-    #         case _:
-    #             raise ValueError(f"Unknown exception option {o.exception}")
-            
-    #     match o.pass_as:
-    #         case "value":
-    #             return reconstruct(param_value)
-    #         case "task", _:
-    #             return v
-    #         case "location", storages:
-    #             return reconstruct([[storage.get_location(t) for storage in storages] for t in l])
-            
-    # @historize("loading")
-    # def load(self, storage: Optional[Storage | List[Storage]]=None):
-    #     if storage is None:
-    #         storage = self.storage_opt.checkpoints
-    #     if isinstance(storage, list):
-    #         excpts = {}
-    #         for s in storage:
-    #             with s.lock(self):
-    #                 if s.has(self):
-    #                     try:
-    #                         return self.load(s)
-    #                     except Exception as e:
-    #                         excpts[storage] = e
-    #         if excpts == {}:
-    #             raise Task.LoadingTaskError(f"Impossible to load result for task {self}: task is not stored on any checkpoints")
-    #         else:
-    #             raise ExceptionGroup(f"Impossible to load result for task {self}. Task was stored on {excpts.keys()}, but all storages had loading errors", list(excpts.values()))    
-    #     else:
-    #         try:
-    #             res = storage.load(self)
-    #             return res
-    #         except Exception as e:
-    #             raise Task.LoadingTaskError(f"Impossible to load result for task {self} from storage {storage} where it is stored") from e
-
-    # @historize("computation_store")  
-    # def store(self, storage=None):
-    #     if storage is None:
-    #         storage = self.storage_opt.checkpoints + self.storage_opt.additional
-    #     if isinstance(storage, list):
-    #         excpts = {}
-    #         for s in storage:
-    #             try:
-    #                 self.store(self, s)
-    #             except Exception as e:
-    #                 excpts[storage] = e
-    #         if not excpts == {}:
-    #             raise ExceptionGroup(f"Impossible to store task {self} to storages {excpts.keys()}", list(excpts.values()))
-    #     else:
-    #         try:
-    #             self.compute_options.result_storage.transfer(self, storage)
-    #         except Exception as e:
-    #             raise Task.DumpingTaskError(f"Impossible to store {self} to storage {storage}") from e
-
-    # @historize("compute", info="None")
-    # async def compute(self, args, executor: concurrent.futures.Executor):
-    #     return await asyncio.get_event_loop().run_in_executor(executor, functools.partial(self.f, **args))
-
-
     @historize("remove")
     async def _remove(self):
         for storage in self.storage_opt.checkpoints + [self.compute_options.result_storage]:
@@ -458,7 +304,7 @@ class Task:
         if hasattr(self, "storage_id"): del self.storage_id
 
     @historize("fetch_param")
-    async def _get_param(self, opt: TaskParamOptions, task, context_stack: contextlib.ExitStack, executor):
+    async def _get_param(self, opt: TaskParamOptions, task, context_stack: contextlib.ExitStack, executor: ProgressExecutor):
         match opt.pass_as:
             case "value":
                 return await task.result(exception="return", executor = executor)
@@ -475,7 +321,7 @@ class Task:
                 return task
         
     @historize("running")
-    async def _run(self, executor, progress) -> None: 
+    async def _run(self, executor) -> None: 
         """
             Runs the computation and stores it to the default storages. Should not be called 
             if already stored.
@@ -518,37 +364,20 @@ class Task:
                                 # mnew_params = dict(**new_params, updater=updater) if self.compute_options.progress else new_params
                                 match mexecutor:
                                     case "async":
-                                        return await functools.partial(call_func_with_updater, self.f, **new_params, cancel_ev=None)()
-                                    case "sync":
-                                        try:
-                                            return functools.partial(call_func_with_updater, self.f, **new_params, cancel_ev=None)()
-                                        except Exception as e:
-                                            logger.warning(f"sync exception {e}")
-                                            raise
-                                    # case "loop_default":
-                                    #     return await asyncio.get_running_loop().run_in_executor(None, functools.partial(self.f, **new_params))
+                                        return await self.f(**new_params)
+                                    
                                     case  custom_executor:
-                                        with contextlib.ExitStack() as stack:
-                                            if isinstance(custom_executor, concurrent.futures.ThreadPoolExecutor):
-                                                cancel_ev = threading.Event()
-                                            if isinstance(custom_executor, concurrent.futures.ProcessPoolExecutor):
-                                                from multiprocessing.managers import SyncManager
-                                                manager = SyncManager()
-                                                stack.enter_context(manager)
-                                                cancel_ev = manager.Event()
-                                            fut = asyncio.get_running_loop().run_in_executor(custom_executor, functools.partial(call_func_with_updater, self.f, **new_params, cancel_ev=cancel_ev))
-                                            try :
-                                                return await fut
-                                            except asyncio.CancelledError:
-                                                logger.warning(f"Triggering cancel from asyncio loop for task {self.storage_id}")
-                                                cancel_ev.set()
-                                                while cancel_ev.is_set():
-                                                    await asyncio.sleep(1)
-                                                raise
+                                        fut = custom_executor.submit(self.f, **new_params)
+                                        fut.add_tqdm_callback(tqdm.tqdm, dict(desc = self.short_name))
+                                        try :
+                                            return await fut.check_for_progress()
+                                        except asyncio.CancelledError:
+                                            # logger.warning(f"Triggering cancel from asyncio loop for task {self.storage_id}")
+                                            raise
                             try:
                                 result = await run_f(self)
                             except asyncio.CancelledError:
-                                logger.warning(f"Result cancelled for task {self.storage_id}")
+                                # logger.warning(f"Result cancelled for task {self.storage_id}")
                                 raise
                             except Exception as e:
                                 try:

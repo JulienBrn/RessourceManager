@@ -15,6 +15,7 @@ def f(n, check_cancel, progress: CustomUpdater):
             long_compute(0.1)
         else:
             time.sleep(0.1)
+    print("returning")
     return n
 
 
@@ -30,12 +31,13 @@ executor = pp
 async def main():
     loopsiginthandler = signal.getsignal(signal.SIGINT)
     se.declare_handlers(defaultsiginthandler, loopsiginthandler)
-    vals = [30, 40, 35, 60, 20, 50, 38, 27]*2
+    # vals = [30, 40, 35, 60, 20, 50, 38, 27]*2
+    vals = [5,10]
     try:
         with executor:
             async with asyncio.TaskGroup() as tg:
-                futs = [executor.submit(f, val, progress_init_args=(f"t{i} (val={val})",)) for i, val in enumerate(vals)]
-                tasks = [tg.create_task(fut.check_for_progress()) for fut in futs]
+                futs = [executor.submit(f, val, progress_init_args=(f"Task {i} (val={val})",)) for i, val in enumerate(vals)]
+                tasks = [tg.create_task(fut) for fut in futs]
                 # await asyncio.sleep(2)
                 # tasks[0].cancel()
     except asyncio.CancelledError: pass
