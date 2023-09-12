@@ -133,12 +133,12 @@ te = progress_executor.ThreadPoolProgressExecutor()
 se = progress_executor.SyncProgressExecutor()
 # pd.set_option('display.max_rows', None)
 async def main():
-    await t.invalidate()
-    await t0.invalidate()
-    print("t, t0 Invalidated")
+    # await t.invalidate()
+    # await t0.invalidate()
+    # print("t, t0 Invalidated")
     # hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     # print(hist_df)
-    myexecutor = pe
+    myexecutor = se
     
     with myexecutor:
         task = asyncio.get_running_loop().create_task(t1.result(executor=myexecutor))
@@ -157,10 +157,11 @@ async def main():
         except asyncio.CancelledError: pass
             # logger.warning("All CANCELLED")
     hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
-    print(hist_df)
+    # print(hist_df)
     print(f"Duration: {hist_df['date'].max() - hist_df['date'].min()}")
 
 
 if __name__ =="__main__":
     asyncio.run(main())
     print("done")
+    # input()

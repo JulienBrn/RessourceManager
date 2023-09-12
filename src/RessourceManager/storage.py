@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn, NewType, ContextManager
 import pandas as pd, tqdm, numpy as np
-import logging, hashlib, functools, pathlib, pickle, shutil, threading, psutil
+import logging, hashlib, functools, pathlib, pickle, shutil, threading, psutil, asyncio
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ class Storage:
         """
         raise NotImplementedError
     
-    def load(self, task: Task) -> Any: 
+    async def load(self, task: Task) -> Any: 
         """
             Parameters
             ----------
@@ -93,7 +93,7 @@ class Storage:
                 MissingTaskResult if the storage does not have the task
         """
         raise NotImplementedError
-    def dump(self, task: Task, val: Any) -> NoReturn: 
+    async def dump(self, task: Task, val: Any) -> NoReturn: 
         """
             Parameters
             ----------
@@ -149,7 +149,7 @@ class Storage:
     def is_locked(self, task) -> bool:
         raise NotImplementedError
     
-    def transfert(self, task: Task, other: Storage) -> NoReturn:
+    async def transfert(self, task: Task, other: Storage) -> NoReturn:
         raise NotImplementedError
 
 
@@ -159,6 +159,7 @@ class LockImplStorage(Storage):
         Abstract storage class giving a good default implementation of lock and is_locked 
         by having a lock counter.
     """
+
     class _Lock:
         def __init__(self, tasks: List[str], storage, callback):
             self.tasks = tasks
@@ -175,6 +176,8 @@ class LockImplStorage(Storage):
                 if self.storage.lock_counters[id] ==0:
                     self.callback(id)
 
+
+    lock_counters: Dict[str, int]
     def __init__(self, callback = lambda x:None):
         super().__init__()
         self.lock_counters = {}
@@ -205,10 +208,10 @@ class DictMemoryStorage(LockImplStorage):
     def has(self, task):
         return task.storage_id in self.values
     
-    def load(self, task):
+    async def load(self, task):
         return self.values[task.storage_id]
     
-    def dump(self, task, val: Any):
+    async def dump(self, task, val: Any):
         self.values[task.storage_id] = val
 
     def remove(self, task):
@@ -220,8 +223,8 @@ class DictMemoryStorage(LockImplStorage):
     
     async def transfert(self, task: Task, other: Storage) -> None:
         # print(f"transfert called with storage {self} to storage {other}")
-        val = self.load(task)
-        other.dump(task, val)
+        val = await self.load(task)
+        await other.dump(task, val)
         
     def __repr__(self):
         return f"DictMemoryStorage"
@@ -287,17 +290,17 @@ class AbstractLocalDiskStorage(LockImplStorage):
     def has(self, task: Task) -> bool:
         return self.get_file_location(task) != None
     
-    def load(self, task: Task) -> Any:
+    async def load(self, task: Task) -> Any:
         loc = self.get_file_location(task)
         if loc is None:
             raise Storage.MissingTaskResult(f"Expecting files matching {self.get_location()}.*")
-        return self.load_content(loc)
+        return await asyncio.to_thread(self.load_content, loc)
     
 
-    def dump(self, task: Task, val: Any):
+    async def dump(self, task: Task, val: Any):
         temp_path = self.get_folder_location(task) / f"temp_{self.content_name}.temp"
         temp_path.parent.mkdir(exist_ok=True, parents=True)
-        extension = self.dump_content(temp_path, val)
+        extension = await asyncio.to_thread(self.dump_content, temp_path, val)
         if temp_path.exists():
             self.remove(task) #because there might be an old file with different extension that might not be rewritten
             shutil.move(str(temp_path), str(self.get_folder_location(task) / f"{self.content_name}.{extension}"))
@@ -327,9 +330,9 @@ class ReturnStorage(DictMemoryStorage):
         super().__init__(callback = lambda id: self.values.pop(id) if id in self.values else None)
 
     
-    def dump(self, task, val: Any):
+    async def dump(self, task, val: Any):
         if self.is_locked(task):
-            super().dump(task, val)
+            await super().dump(task, val)
         
     def __repr__(self):
         return f"ReturnStorage"
@@ -372,10 +375,10 @@ class MemoryStorage(DictMemoryStorage):
         if mem.available/10**9 < self.min_available: 
             self.free_up_space()
 
-    def dump(self, task, val: Any):
+    async def dump(self, task, val: Any):
         if self.check_before_dump:
             self.free_if_necessary()
-        super().dump(task, val)
+        await super().dump(task, val)
         
     def __repr__(self):
         return f"MemoryStorage"
@@ -444,11 +447,11 @@ class JsonLocalFileKeyStorage(LockImplStorage):
         else:
             return False
     
-    def load(self, task: Task) -> Any:
+    async def load(self, task: Task) -> Any:
         import json
         return json.load(self.get_file_location(task).open("r"))
     
-    def dump(self, task: Task, val: Any):
+    async def dump(self, task: Task, val: Any):
         import json
         if self.get_file_location(task).exists():
             d = json.load(self.get_file_location(task).open("r"))
@@ -551,8 +554,8 @@ class MemoryMetadataStorage(DictMemoryStorage):
         self.f = f
 
     
-    def dump(self, task, val: Any):
-        super().dump(task, self.f(task, val))
+    async def dump(self, task, val: Any):
+        await super().dump(task, self.f(task, val))
 
     def __repr__(self):
         return f"MemoryMetadataStorage"

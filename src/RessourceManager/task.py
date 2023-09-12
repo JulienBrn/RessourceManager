@@ -257,14 +257,14 @@ class Task:
         for storage in self.storage_opt.checkpoints:
             with storage.lock(self):
                 if storage.has(self):
-                    res = storage.load(self)
+                    res = await storage.load(self)
                     if exception == "raise" and isinstance(res, Exception):
                         raise res
                     else:
                         return res
         with self.compute_options.result_storage.lock(self):
             await self._run(executor=executor)
-            res = self.compute_options.result_storage.load(self)
+            res = await self.compute_options.result_storage.load(self)
             if exception == "raise" and isinstance(res, Exception):
                 raise res
             else:
@@ -389,7 +389,7 @@ class Task:
                     result = await compute()
 
             if not result is None:
-                self.compute_options.result_storage.dump(self, result if not isinstance(result, Task.NoneReturn) else None)
+                await self.compute_options.result_storage.dump(self, result if not isinstance(result, Task.NoneReturn) else None)
             if not self.compute_options.result_storage.has(self):
                 raise Task.MissingResultError(f"Expected storage {self.compute_options.result_storage} to have result for task {self.short_name} with storage_id {self.storage_id} but storage does not have it...")
                 
