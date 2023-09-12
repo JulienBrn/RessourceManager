@@ -151,7 +151,19 @@ class Storage:
     
     async def transfert(self, task: Task, other: Storage) -> NoReturn:
         raise NotImplementedError
-
+    
+    def is_exception(self, task: Task) -> bool:
+        load = None
+        async def stupid(task):
+            nonlocal load
+            load = await self.load(task)
+            
+        coro = stupid(task)
+        try:
+            coro.send(None)
+        except StopIteration:
+            pass
+        return isinstance(load, BaseException)
 
 
 class LockImplStorage(Storage):
@@ -394,7 +406,8 @@ class PickledDiskStorage(AbstractLocalDiskStorage):
         super().__init__("pickled_data", base_folder)
 
     def load_content(self, path) -> Any: 
-        return pickle.load(path.open("rb"))
+        with path.open("rb") as f:
+            return pickle.load(f)
 
     def dump_content(self, path: pathlib.Path, val) -> str: 
         # print(f"dump called with storage {self} path = {path.absolute()} val={val}")

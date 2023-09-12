@@ -200,6 +200,10 @@ class Task:
         reconstruct: Callable[[Dict[str, Task]], Any]
         embedded_tasks: Dict[str, Task]
 
+        initial_param: Any = None
+        embedded_retriever: Callable[[Any], Tuple[Dict[str, Task], Callable[[Dict[str, Task]], Any]]] = None
+        dynamic: bool = False
+
     class LoadingTaskError(Exception): pass
     class InputTaskError(Exception): pass
     class DumpingTaskError(Exception): pass
@@ -272,9 +276,9 @@ class Task:
             
     async def write_to_storage(self, storage, executor: ProgressExecutor): 
         if not storage.has(self):
-            with self.compute_options.result_storage.lock():
-                await self._run(executor=executor, progress=None)
-                self.compute_options.result_storage.transfert(self, storage)
+            with self.compute_options.result_storage.lock(self):
+                await self._run(executor=executor)
+                await self.compute_options.result_storage.transfert(self, storage)
                 
     async def invalidate(self): 
         async with asyncio.TaskGroup() as tg:
@@ -312,12 +316,18 @@ class Task:
                 context_stack.enter_context(storage.lock(task))
                 if not storage.has(task):
                     await task.write_to_storage(storage, executor = executor)
+                if storage.is_exception(task) and opt.exception=="propagate":
+                    #Perhaps remove the lock?
+                    return storage.load(task)
                 return storage.get_location(task)
             case ("task", storages):
                 for storage in storages:
                     context_stack.enter_context(storage.lock(task))
                     if not storage.has(task):
                         await task.write_to_storage(storage, executor = executor)
+                    if storage.is_exception(task) and opt.exception=="propagate":
+                        #Perhaps remove the lock?
+                        return storage.load(task)
                 return task
         
     @historize("running")
@@ -360,8 +370,6 @@ class Task:
                             @add_exception_note(f"During computation for task {short_name}")
                             async def run_f(self: Task):
                                 mexecutor = self.compute_options.executor if not self.compute_options.executor == "demanded" else executor
-                                # updater = Updater()
-                                # mnew_params = dict(**new_params, updater=updater) if self.compute_options.progress else new_params
                                 match mexecutor:
                                     case "async":
                                         return await self.f(**new_params)
@@ -372,7 +380,6 @@ class Task:
                                         try :
                                             return await fut.check_for_progress()
                                         except asyncio.CancelledError:
-                                            # logger.warning(f"Triggering cancel from asyncio loop for task {self.storage_id}")
                                             raise
                             try:
                                 result = await run_f(self)

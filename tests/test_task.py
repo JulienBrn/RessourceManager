@@ -27,6 +27,8 @@ def f(a: pd.DataFrame, b: pd.DataFrame, n: int, desc, progress):
         # if updater is None:
         #     updater = tqdm.tqdm()
         # updater.set_description(desc)
+        if a<3:
+            raise ValueError(f"a >10: a= {a}")
         res = a+b+syracuse(n, progress)
         return res
     # except asyncio.CancelledError:
@@ -133,15 +135,15 @@ te = progress_executor.ThreadPoolProgressExecutor()
 se = progress_executor.SyncProgressExecutor()
 # pd.set_option('display.max_rows', None)
 async def main():
-    # await t.invalidate()
-    # await t0.invalidate()
-    # print("t, t0 Invalidated")
+    await t.invalidate()
+    await t0.invalidate()
+    print("t, t0 Invalidated")
     # hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     # print(hist_df)
     myexecutor = se
     
     with myexecutor:
-        task = asyncio.get_running_loop().create_task(t1.result(executor=myexecutor))
+        task = asyncio.get_running_loop().create_task(t1.write_to_storage(memory_storage, executor=myexecutor))
         logger.info("total task created and started running")
         # await asyncio.sleep(2)
         # logger.info("triggering cancel")
@@ -150,6 +152,7 @@ async def main():
             try:
                 # logger.info("Awaiting result")
                 await task
+                # await t1.result(executor=myexecutor)
             except KeyboardInterrupt:
                 pass
                 # logger.info("Keyboard interuption, cancelling task")
