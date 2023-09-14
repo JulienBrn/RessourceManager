@@ -1,23 +1,27 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn
+from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn, TypeVar
 import pandas as pd, tqdm, numpy as np
-import logging, hashlib, functools, contextlib, concurrent, asyncio
+import logging, hashlib, functools, contextlib, asyncio
 # from RessourceManager.lifting import EmbeddedTaskHandler
 from RessourceManager.id_makers import unique_id, make_result_id
 from RessourceManager.storage import Storage, memory_storage, pickled_disk_storage, return_storage
-import inspect, pathlib, traceback, datetime, threading, multiprocessing, graphviz
+import inspect, pathlib, traceback, datetime, graphviz
 # from RessourceManager.task_manager import TaskManager
 from dataclasses import dataclass, field
 from progress_executor import ProgressExecutor
-
+from RessourceManager.subtask_extractor import SubtaskExtractor, DynamicSubtaskExtractorPreprocess, make_basic_subtask_extractor
 logger = logging.getLogger(__name__)
 
 # @dataclass
 # class TaskGroup:
 #     name: str
 
-@dataclass
+# T = TypeVar('T')
+# Retriever = Callable[[Any], Tuple[Dict[str, T], Callable[[Dict[str, T]], Any]]]
+
+# @dataclass
 class TaskParamOptions:
+    
     """
         Options for parameters of the task.
         - dependency: states how that the task identifier depends on the parameter. Note that two task with the same identifiers are considered the "same". 
@@ -48,14 +52,15 @@ class TaskParamOptions:
 
         Note that input parameters should have __repr__ defined
     """
-    dependency: Literal["ignore", "value", "graph"]
+    ignore_dependency: bool
     pass_as: Literal["value"] | Tuple[Literal["task"], List[Storage]] | Tuple[Literal["location"], Storage] = "value"
     exception: Literal["propagate", "exception_as_arg"] = "propagate"
-    embedded_task_retriever: Callable[[Any], Tuple[List[Task], Callable[[List[Any]], Any]]] = \
-        lambda obj: ([], lambda l:obj) if not isinstance(obj, Task) else ([obj], lambda l:l[0])
+    static_task_retriever: SubtaskExtractor = field(default_factory=lambda: make_basic_subtask_extractor(0)) 
+    dynamic_retriever: Optional[DynamicSubtaskExtractorPreprocess] = None
 
 
-@dataclass
+
+# @dataclass
 class ComputeOptions:
     """
         - The result_location attribute specifies whether the function returns the task results 
@@ -81,7 +86,7 @@ class ComputeOptions:
     executor: Literal["async", "demanded"] | ProgressExecutor = "demanded"
     alternative_paths: List[Any] = ()#Alternative computation paths dependant to what has already been computed
     
-@dataclass 
+# @dataclass 
 class StorageOptions:
     """
         Describes where a task should be attempted to be read and where a task should be attempted to be written.
@@ -90,7 +95,7 @@ class StorageOptions:
     checkpoints: List[Storage]  = field(default_factory=lambda: [memory_storage, pickled_disk_storage])
     additional: List[Storage] = field(default_factory=lambda: [])
 
-@dataclass
+# @dataclass
 class HistoryEntry:
     action: Literal["computing_identifier", "computing_storage_id", "computing_short_name", "calling_f", "running", "dumping", "loading", "retrieving_params"]
     qualifier: Optional[Literal["start", "end"]]
@@ -186,7 +191,7 @@ def add_exception_note(note: str):
 
 computation_asyncio_lock = {}
 
-@dataclass
+# @dataclass
 class Task:
     class TaskExceptionValue(Exception):pass
     class PropagatedException(TaskExceptionValue): pass
@@ -196,13 +201,14 @@ class Task:
     
     @dataclass
     class ParamInfo:
+
+        # def __init__(self, option, )
         options: TaskParamOptions
         reconstruct: Callable[[Dict[str, Task]], Any]
         embedded_tasks: Dict[str, Task]
 
         initial_param: Any = None
         embedded_retriever: Callable[[Any], Tuple[Dict[str, Task], Callable[[Dict[str, Task]], Any]]] = None
-        dynamic: bool = False
 
     class LoadingTaskError(Exception): pass
     class InputTaskError(Exception): pass
@@ -218,6 +224,7 @@ class Task:
     compute_options: ComputeOptions
     used_by: List[Task] = field(default_factory=lambda:[])
     
+
     @functools.cached_property #For each parameter the list of tasks in it
     def task_dependencies(self) -> Dict[str, List[Task]]: 
         return {k:o.embedded_task_retriever(v)[0] for k,(v,o) in self.param_dict if not o.dependency == "ignore"}

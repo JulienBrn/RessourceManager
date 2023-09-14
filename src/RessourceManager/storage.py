@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Callable, Literal, Optional, Tuple, Set, TypedDict, NoReturn, NewType, ContextManager
 import pandas as pd, tqdm, numpy as np
-import logging, hashlib, functools, pathlib, pickle, shutil, threading, psutil, asyncio
+import logging, hashlib, functools, pathlib, pickle, shutil,psutil, asyncio
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -152,12 +152,16 @@ class Storage:
     async def transfert(self, task: Task, other: Storage) -> NoReturn:
         raise NotImplementedError
     
+
+
     def is_exception(self, task: Task) -> bool:
+        """
+            Stupid implementation for now
+        """
         load = None
         async def stupid(task):
             nonlocal load
             load = await self.load(task)
-            
         coro = stupid(task)
         try:
             coro.send(None)
@@ -354,11 +358,10 @@ class MemoryStorage(DictMemoryStorage):
     """
         Implementation of DictMemoryStorage that automatically frees up memory.
     """
-    timer: Optional[threading.Timer]
     check_before_dump: bool
     min_available: float
 
-    def __init__(self, min_available: float = 8, check_timer: Optional[float]= 10, check_before_dump: bool = True):
+    def __init__(self, min_available: float = 8, check_before_dump: bool = True):
         """
             Parameters
             ----------
@@ -374,11 +377,6 @@ class MemoryStorage(DictMemoryStorage):
         """
         super().__init__()
         self.min_available = min_available
-        if not check_timer is None:
-            self.timer = threading.Timer(check_timer, lambda: self.free_if_necessary())
-            self.timer.start()
-        else:
-            self.timer = None
         self.check_before_dump = check_before_dump
     
 
@@ -392,6 +390,11 @@ class MemoryStorage(DictMemoryStorage):
             self.free_if_necessary()
         await super().dump(task, val)
         
+    async def free_memory_checks(self, min_interval=1):
+        while True:
+            self.free_if_necessary()
+            await asyncio.sleep(min_interval)
+
     def __repr__(self):
         return f"MemoryStorage"
 

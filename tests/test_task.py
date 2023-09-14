@@ -152,6 +152,7 @@ async def main():
             try:
                 # logger.info("Awaiting result")
                 await task
+                logger.info(f"is excpt: {memory_storage.is_exception(t1)}")
                 # await t1.result(executor=myexecutor)
             except KeyboardInterrupt:
                 pass
