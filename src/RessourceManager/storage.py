@@ -362,7 +362,7 @@ class MemoryStorage(DictMemoryStorage):
     min_available: float
     timer: Optional[asyncio.Task]
 
-    def __init__(self, min_available: float = 8, async_timer: Optional[float] = 10, check_before_dump: bool = True):
+    def __init__(self, min_available: float = 8, async_timer: Optional[float] = 1, check_before_dump: bool = True):
         """
             Parameters
             ----------
@@ -377,10 +377,9 @@ class MemoryStorage(DictMemoryStorage):
                 To never free up space, simply set min_available to 0 and/or no checks
         """
         super().__init__()
+        self.timer=None
         if not async_timer is None:
-            self.timer = asyncio.get_event_loop().create_task(self.free_memory_checks(async_timer))
-        else:
-            self.timer=None
+            self.timer = self.check_for_free_memory(async_timer)
         self.min_available = min_available
         self.check_before_dump = check_before_dump
     
@@ -398,16 +397,25 @@ class MemoryStorage(DictMemoryStorage):
     def check_for_free_memory(self, async_timer: float):
         if not self.timer is None:
             self.timer.cancel()
-        self.timer = asyncio.get_event_loop().create_task(self.free_memory_checks(async_timer))
+        def recursive_check():
+            self.free_if_necessary()
+            self.timer = asyncio.get_running_loop().call_later(async_timer, recursive_check)
+        try:
+            self.timer = asyncio.get_running_loop().call_soon(recursive_check)
+        except Exception as e:
+            logger.info(f"check_for_free_memory {e}")
     
     async def free_memory_checks(self, min_interval=1):
         while True:
-            print("memory checking")
             self.free_if_necessary()
             await asyncio.sleep(min_interval)
 
     def __repr__(self):
         return f"MemoryStorage"
+    
+    def __del__(self):
+        if not self.timer is None:
+            self.timer.cancel()
 
     
 class PickledDiskStorage(AbstractLocalDiskStorage):

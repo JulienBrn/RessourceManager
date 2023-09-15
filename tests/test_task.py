@@ -21,28 +21,28 @@ def syracuse(n, progress):
     return tot
 
 
-def f(a: pd.DataFrame, b: pd.DataFrame, n: int, desc, progress):
+def f(a: int, b: int, n: int, desc, progress):
     # time.sleep(5)
-    try:
+    # try:
         # if updater is None:
         #     updater = tqdm.tqdm()
         # updater.set_description(desc)
-        if a<3:
-            raise ValueError(f"a >10: a= {a}")
+        # if a<3:
+        #     raise ValueError(f"a >10: a= {a}")
         res = a+b+syracuse(n, progress)
         return res
     # except asyncio.CancelledError:
     #     print(f"Cancelling {desc} from within task")
     #     raise
-    except KeyboardInterrupt:
-        # logger.warning("Within Task KeyBoard Interrupted")
-        raise 
-    except asyncio.CancelledError:
-        # logger.warning("Within Task Cancelled")
-        raise 
-    except BaseException as e:
-        #  logger.exception("Within compute exception", exc_info=e)
-         raise
+    # except KeyboardInterrupt:
+    #     # logger.warning("Within Task KeyBoard Interrupted")
+    #     raise 
+    # except asyncio.CancelledError:
+    #     # logger.warning("Within Task Cancelled")
+    #     raise 
+    # except BaseException as e:
+    #     #  logger.exception("Within compute exception", exc_info=e)
+    #      raise
 
 init_df = 1
 # pd.DataFrame([[i, 10*i] for i in range(3)], columns=["x", "y"])
@@ -50,16 +50,16 @@ n =  int(0.1*10**8)
 
 param_dict = dict(
     a= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: init_df, embedded_tasks={}),
     b= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: init_df+2, embedded_tasks={}),
     n= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: n, embedded_tasks={}),
     desc= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: "t", embedded_tasks={})
 )
 t = Task(
@@ -73,16 +73,16 @@ t = Task(
 
 param_dict0 = dict(
     a= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: init_df+3, embedded_tasks={}),
     b= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: init_df+4, embedded_tasks={}),
     n= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: n, embedded_tasks={}),
     desc= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: "t0", embedded_tasks={})
 )
 t0 = Task(
@@ -97,16 +97,16 @@ t0 = Task(
 
 param_dict1 = dict(
     a= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: d.popitem()[1], embedded_tasks={"t0":t0}),
     b= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: d.popitem()[1], embedded_tasks={"t":t}),
     n= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: n, embedded_tasks={}),
     desc= Task.ParamInfo(
-        options=TaskParamOptions(dependency="graph", pass_as="value", exception="propagate"),
+        options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: "t1", embedded_tasks={})
 )
 
@@ -135,16 +135,18 @@ te = progress_executor.ThreadPoolProgressExecutor()
 se = progress_executor.SyncProgressExecutor()
 # pd.set_option('display.max_rows', None)
 async def main():
+    memory_storage.check_for_free_memory(10)
     await t.invalidate()
     await t0.invalidate()
     print("t, t0 Invalidated")
     # hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     # print(hist_df)
-    myexecutor = se
+    myexecutor = pe
     
     with myexecutor:
-        task = asyncio.get_running_loop().create_task(t1.write_to_storage(memory_storage, executor=myexecutor))
-        logger.info("total task created and started running")
+        async with asyncio.TaskGroup() as tg:
+            task = tg.create_task(t1.write_to_storage(memory_storage, executor=myexecutor))
+            logger.info("total task created and started running")
         # await asyncio.sleep(2)
         # logger.info("triggering cancel")
         # task.cancel()

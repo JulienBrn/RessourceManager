@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # T = TypeVar('T')
 # Retriever = Callable[[Any], Tuple[Dict[str, T], Callable[[Dict[str, T]], Any]]]
 
-# @dataclass
+@dataclass
 class TaskParamOptions:
     
     """
@@ -52,7 +52,7 @@ class TaskParamOptions:
 
         Note that input parameters should have __repr__ defined
     """
-    ignore_dependency: bool
+    ignore_for_dependency: bool
     pass_as: Literal["value"] | Tuple[Literal["task"], List[Storage]] | Tuple[Literal["location"], Storage] = "value"
     exception: Literal["propagate", "exception_as_arg"] = "propagate"
     static_task_retriever: SubtaskExtractor = field(default_factory=lambda: make_basic_subtask_extractor(0)) 
@@ -60,7 +60,7 @@ class TaskParamOptions:
 
 
 
-# @dataclass
+@dataclass
 class ComputeOptions:
     """
         - The result_location attribute specifies whether the function returns the task results 
@@ -86,7 +86,7 @@ class ComputeOptions:
     executor: Literal["async", "demanded"] | ProgressExecutor = "demanded"
     alternative_paths: List[Any] = ()#Alternative computation paths dependant to what has already been computed
     
-# @dataclass 
+@dataclass 
 class StorageOptions:
     """
         Describes where a task should be attempted to be read and where a task should be attempted to be written.
@@ -95,7 +95,7 @@ class StorageOptions:
     checkpoints: List[Storage]  = field(default_factory=lambda: [memory_storage, pickled_disk_storage])
     additional: List[Storage] = field(default_factory=lambda: [])
 
-# @dataclass
+@dataclass
 class HistoryEntry:
     action: Literal["computing_identifier", "computing_storage_id", "computing_short_name", "calling_f", "running", "dumping", "loading", "retrieving_params"]
     qualifier: Optional[Literal["start", "end"]]
@@ -191,7 +191,7 @@ def add_exception_note(note: str):
 
 computation_asyncio_lock = {}
 
-# @dataclass
+@dataclass
 class Task:
     class TaskExceptionValue(Exception):pass
     class PropagatedException(TaskExceptionValue): pass
@@ -227,13 +227,13 @@ class Task:
 
     @functools.cached_property #For each parameter the list of tasks in it
     def task_dependencies(self) -> Dict[str, List[Task]]: 
-        return {k:o.embedded_task_retriever(v)[0] for k,(v,o) in self.param_dict if not o.dependency == "ignore"}
+        return {k:o.embedded_task_retriever(v)[0] for k,(v,o) in self.param_dict if not o.ignore_for_dependency}
 
 
     @functools.cached_property
     @historize("computing_identifier")
     def identifier(self): 
-        identifier_dict = {k:param.reconstruct({t_name: t.identifier for t_name,t in param.embedded_tasks.items()}) for k, param in self.param_dict.items() if not param.options.dependency=="ignore"}
+        identifier_dict = {k:param.reconstruct({t_name: t.identifier for t_name,t in param.embedded_tasks.items()}) for k, param in self.param_dict.items() if not param.options.ignore_for_dependency}
         return make_result_id(self.func_id, identifier_dict, False)
     
     @functools.cached_property
@@ -241,9 +241,9 @@ class Task:
     def storage_id(self):
         storage_id_dict = {
             k:param.reconstruct({
-                t_name: t.storage_id if param.options.dependency=="graph" else t.result(exception="return") 
+                t_name: t.storage_id if param.options.dynamic_retriever==None else t.result(exception="return") 
                     for t_name,t in param.embedded_tasks.items()
-            }) for k, param in self.param_dict.items() if not param.options.dependency=="ignore"}
+            }) for k, param in self.param_dict.items() if not param.options.ignore_for_dependency}
         
         return make_result_id(self.func_id, storage_id_dict, True)
 
@@ -405,7 +405,7 @@ class Task:
             if not result is None:
                 await self.compute_options.result_storage.dump(self, result if not isinstance(result, Task.NoneReturn) else None)
             if not self.compute_options.result_storage.has(self):
-                raise Task.MissingResultError(f"Expected storage {self.compute_options.result_storage} to have result for task {self.short_name} with storage_id {self.storage_id} but storage does not have it...")
+                raise Task.MissingResultError(f"Expected storage {self.compute_options.result_storage} to have result for task {self.short_name} with storage_id {self.storage_id} but storage does not have it... (Note: result is {result})")
                 
             @historize("Autostore")
             @add_exception_note(f"During storing of task {self.short_name}")
