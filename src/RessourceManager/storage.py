@@ -402,8 +402,11 @@ class MemoryStorage(DictMemoryStorage):
             self.timer = asyncio.get_running_loop().call_later(async_timer, recursive_check)
         try:
             self.timer = asyncio.get_running_loop().call_soon(recursive_check)
-        except Exception as e:
-            logger.info(f"check_for_free_memory {e}")
+        except RuntimeError as e:
+            if "running event loop" in str(e):
+                logger.info(f"check_for_free_memory, {e}. No checking will be done")
+            else:
+                raise
     
     async def free_memory_checks(self, min_interval=1):
         while True:

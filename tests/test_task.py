@@ -1,10 +1,16 @@
-from RessourceManager.task import *
 import logging, beautifullogger, time, concurrent
-from RessourceManager.storage import result_metadata_storage, readable_human_writer, task_info_metadata_storage
-
 logger=logging.getLogger()
 beautifullogger.setup()
 logging.getLogger("RessourceManager.id_makers").setLevel(logging.ERROR)
+logging.getLogger("graphviz").setLevel(logging.WARNING)
+logging.getLogger("numexpr").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+from RessourceManager.task import *
+
+from RessourceManager.storage import result_metadata_storage, readable_human_writer, task_info_metadata_storage
+
+
 # import signal
 import time
  
@@ -27,8 +33,8 @@ def f(a: int, b: int, n: int, desc, progress):
         # if updater is None:
         #     updater = tqdm.tqdm()
         # updater.set_description(desc)
-        # if a<3:
-        #     raise ValueError(f"a >10: a= {a}")
+        if a<3:
+            raise ValueError(f"a >10: a= {a}")
         res = a+b+syracuse(n, progress)
         return res
     # except asyncio.CancelledError:
@@ -98,10 +104,10 @@ t0 = Task(
 param_dict1 = dict(
     a= Task.ParamInfo(
         options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
-        reconstruct = lambda d: d.popitem()[1], embedded_tasks={"t0":t0}),
+        reconstruct = lambda d: d.popitem()[1], embedded_tasks={"":t0}),
     b= Task.ParamInfo(
         options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
-        reconstruct = lambda d: d.popitem()[1], embedded_tasks={"t":t}),
+        reconstruct = lambda d: d.popitem()[1], embedded_tasks={"":t}),
     n= Task.ParamInfo(
         options=TaskParamOptions(ignore_for_dependency=False, pass_as="value", exception="propagate"),
         reconstruct = lambda d: n, embedded_tasks={}),
@@ -141,11 +147,11 @@ async def main():
     print("t, t0 Invalidated")
     # hist_df = pd.concat({n:t.get_history() for n,t in tasks.items()}).reset_index(names=["task", "num"]).drop(columns="num").sort_values("date")
     # print(hist_df)
-    myexecutor = pe
+    myexecutor = te
     
     with myexecutor:
         async with asyncio.TaskGroup() as tg:
-            task = tg.create_task(t1.write_to_storage(memory_storage, executor=myexecutor))
+            task = tg.create_task(t1.result(exception="return", executor=myexecutor))
             logger.info("total task created and started running")
         # await asyncio.sleep(2)
         # logger.info("triggering cancel")
@@ -153,8 +159,12 @@ async def main():
         try:
             try:
                 # logger.info("Awaiting result")
-                await task
-                logger.info(f"is excpt: {memory_storage.is_exception(t1)}")
+                res = await task
+                logger.info(f"Result is {res}")
+                if isinstance(res, Exception):
+                    r = input("Do you want to display the exception? Y/n ")
+                    if not "n" in r.lower():
+                        raise res
                 # await t1.result(executor=myexecutor)
             except KeyboardInterrupt:
                 pass

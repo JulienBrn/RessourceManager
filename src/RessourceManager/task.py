@@ -147,23 +147,20 @@ def format_exception_dict(cls, format_string: str, excpts: Dict[str, BaseExcepti
             return excpts, [""]
         excpts = {k:format_exception_dict_impl(d) for k, d in excpts.items()}
         excpts = {k:(r, nks) for k, (r, nks) in excpts.items() if not r is None}
-
         if len(excpts) == 0:
             return None, [""]
         elif len(excpts) == 1:
             (k, (r, nks)) = excpts.popitem()
-            if r is None:
-                return None
-            elif isinstance(r, ExceptionGroup):
+            if isinstance(r, ExceptionGroup):
                 return r, [f"{k}.{nk}" for nk in nks]
             else:
-                return r, nks
+                return r, [f"{k}.{nk}" for nk in nks]
         else:
             return ExceptionGroup(f"keys={[k for k, (r, nks) in excpts.items()]}", [r for k, (r, nks) in excpts.items()]), excpts.keys()
         
     e, ks = format_exception_dict_impl(excpts)
     if not e is None:
-        res = cls(format_string.format(ks))
+        res = cls(format_string.format([k.strip(".") for k in ks]))
         try:
             raise res from e
         except Exception as e:
@@ -364,12 +361,12 @@ class Task:
                     result = format_exception_dict(Task.PropagatedException, "Propagated exception from input {}", excpts)
                 else:
                     new_params = {k:self.param_dict[k].reconstruct(d) for k,d in embedded_args.items()}
-                    short_name = ...
+                    short_name = self.short_name
                     async def compute():
                         if not self.storage_id in computation_asyncio_lock:
                             computation_asyncio_lock[self.storage_id] = asyncio.Lock()
                         # async with computation_asyncio_lock[self.storage_id]:
-                        if True:
+                        async with computation_asyncio_lock[self.storage_id]:
                             if self.compute_options.result_storage.has(self):
                                 return
                             
